@@ -1,4 +1,6 @@
-use crate::{Alphabet, Symbol};
+use std::marker::PhantomData;
+
+use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit;
 struct Decoder<S, A>
 where
@@ -6,6 +8,21 @@ where
     A: Alphabet<S = S>,
 {
     alphabet: A,
+}
+
+struct DecoderOutput<S> {
+    _marker: PhantomData<S>,
+}
+
+impl<S> Iterator for DecoderOutput<S>
+where
+    S: Symbol,
+{
+    type Item = DecoderEvent<S>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
 }
 
 enum DecoderEvent<S: Symbol> {
@@ -25,7 +42,7 @@ impl<S: Symbol, A: Alphabet<S = S>> Decoder<S, A> {
 
     /// Decode a stream of bits as a stream of symbols.
     ///
-    /// This method will decode a single "message", yielding all the decoded
+    /// This method will decode a single message, yielding all the decoded
     /// symbols (including the EOF symbol), and then indicating completion
     /// with the Done event.
     pub fn decode<I, O>(&self, input: &mut I) -> O
