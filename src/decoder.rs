@@ -10,6 +10,15 @@ where
     alphabet: A,
 }
 
+#[derive(PartialEq, Debug)]
+enum DecoderEvent<S: Symbol> {
+    /// A symbol was decoded from the input stream.
+    DecodedSymbol(S),
+    /// Decoding of a single message is complete. The usize indicates how many
+    /// bits of the input correspond to the decoded message.
+    Done(usize),
+}
+
 struct DecoderOutput<S> {
     _marker: PhantomData<S>,
 }
@@ -25,14 +34,6 @@ where
     }
 }
 
-enum DecoderEvent<S: Symbol> {
-    /// A symbol was decoded from the input stream.
-    DecodedSymbol(S),
-    /// Decoding of a single message is complete. The usize indicates how many
-    /// bits of the input correspond to the decoded message.
-    Done(usize),
-}
-
 impl<S: Symbol, A: Alphabet<S = S>> Decoder<S, A> {
     /// Create a decoder capable of decoding a stream of bits that was encoded
     /// using the given alphabet.
@@ -45,11 +46,41 @@ impl<S: Symbol, A: Alphabet<S = S>> Decoder<S, A> {
     /// This method will decode a single message, yielding all the decoded
     /// symbols (including the EOF symbol), and then indicating completion
     /// with the Done event.
-    pub fn decode<I, O>(&self, input: &mut I) -> O
+    pub fn decode<I>(&self, input: &mut I) -> DecoderOutput<S>
     where
         I: Iterator<Item = Bit>,
-        O: Iterator<Item = DecoderEvent<S>>,
     {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::example::{ExampleAlphabet, ExampleSymbol};
+    use DecoderEvent::*;
+    use ExampleSymbol::*;
+    use biterator::Bit::{One, Zero};
+
+    #[test]
+    fn test_small_message() {
+        let alphabet = ExampleAlphabet::new();
+        let decoder = Decoder::new(alphabet);
+        let bits = vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero];
+        let input_size = bits.len();
+        let mut input = bits.into_iter();
+
+        let output: Vec<_> = decoder.decode(&mut input).collect();
+
+        assert_eq!(
+            output,
+            vec![
+                DecodedSymbol(B),
+                DecodedSymbol(A),
+                DecodedSymbol(C),
+                DecodedSymbol(Eof),
+                Done(input_size),
+            ]
+        );
     }
 }

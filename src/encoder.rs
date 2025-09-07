@@ -51,9 +51,12 @@ mod test {
         let alphabet = ExampleAlphabet::new();
         let encoder = Encoder::new(alphabet);
         let mut input = vec![B, A, C, Eof].into_iter();
+
         let output: Vec<_> = encoder.encode(&mut input).collect();
 
-        // TODO Manually encode, put the bits here
-        assert_eq!(output, vec![])
+        assert_eq!(
+            output,
+            vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero]
+        )
     }
 }
