@@ -34,8 +34,8 @@ impl Alphabet for ExampleAlphabet {
         self.symbols.iter()
     }
 
-    fn is_eof(&self, symbol: &Self::S) -> bool {
-        *symbol == ExampleSymbol::Eof
+    fn eof(&self) -> ExampleSymbol {
+        ExampleSymbol::Eof
     }
 
     fn interval_width(&self, symbol: &Self::S) -> usize {
@@ -70,8 +70,7 @@ mod test {
     #[test]
     fn test_eof() {
         let alphabet = ExampleAlphabet::new();
-        assert!(alphabet.is_eof(&Eof));
-        assert!(!alphabet.is_eof(&B));
+        assert!(alphabet.eof() == Eof);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit;
-struct Decoder<S, A>
+struct Decoder<S, A, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
     A: Alphabet<S = S>,
@@ -34,7 +34,11 @@ where
     }
 }
 
-impl<S: Symbol, A: Alphabet<S = S>> Decoder<S, A> {
+impl<S: Symbol, A: Alphabet<S = S>, const BITS_OF_PRECISION: u32> Decoder<S, A, BITS_OF_PRECISION> {
+    const WHOLE: usize = 2_usize.pow(BITS_OF_PRECISION);
+    const HALF: usize = Self::WHOLE / 2;
+    const QUARTER: usize = Self::WHOLE / 4;
+
     /// Create a decoder capable of decoding a stream of bits that was encoded
     /// using the given alphabet.
     pub fn new(alphabet: A) -> Self {
@@ -62,25 +66,46 @@ mod test {
     use ExampleSymbol::*;
     use biterator::Bit::{One, Zero};
 
-    #[test]
-    fn test_small_message() {
+    // The below test cases assume 32-bit precision
+    const BITS_OF_PRECISION: u32 = 32;
+
+    fn assert_decoding_matches(input: Vec<Bit>, expected_output: Vec<DecoderEvent<ExampleSymbol>>) {
         let alphabet = ExampleAlphabet::new();
-        let decoder = Decoder::new(alphabet);
-        let bits = vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero];
-        let input_size = bits.len();
-        let mut input = bits.into_iter();
+        let decoder: Decoder<_, _, BITS_OF_PRECISION> = Decoder::new(alphabet);
+        let mut input_iter = input.into_iter();
 
-        let output: Vec<_> = decoder.decode(&mut input).collect();
+        let output: Vec<_> = decoder.decode(&mut input_iter).collect();
 
-        assert_eq!(
-            output,
+        assert_eq!(output, expected_output);
+    }
+
+    #[test]
+    fn decode_empty_message() {
+        assert_decoding_matches(
+            vec![One, One, One, Zero, One],
+            vec![DecodedSymbol(Eof), Done(5)],
+        );
+    }
+
+    #[test]
+    fn decode_very_small_message() {
+        assert_decoding_matches(
+            vec![One, One, One, Zero, Zero, One, Zero],
+            vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)],
+        );
+    }
+
+    #[test]
+    fn decode_small_message() {
+        assert_decoding_matches(
+            vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero],
             vec![
                 DecodedSymbol(B),
                 DecodedSymbol(A),
                 DecodedSymbol(C),
                 DecodedSymbol(Eof),
-                Done(input_size),
-            ]
+                Done(10),
+            ],
         );
     }
 }

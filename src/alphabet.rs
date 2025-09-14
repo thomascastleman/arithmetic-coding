@@ -6,9 +6,8 @@ pub trait Alphabet {
     /// An iterator over the symbols in the alphabet.
     fn symbols(&self) -> impl Iterator<Item = &Self::S>;
 
-    /// Determine whether or not this symbol is the "end of file" symbol, which
-    /// terminates the input stream.
-    fn is_eof(&self, symbol: &Self::S) -> bool;
+    /// The "end of file" symbol, which terminates the input stream.
+    fn eof(&self) -> Self::S;
 
     /// The probability that this symbol is the next symbol in the input stream,
     /// represented as an integer such that dividing it by the sum of all integer
