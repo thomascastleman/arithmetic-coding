@@ -16,6 +16,16 @@ pub trait Alphabet {
     /// This is r_i.
     fn interval_width(&self, symbol: &Self::S) -> usize;
 
+    /// The sum of all interval widths.
+    /// This is R.
+    fn total_interval_width(&self) -> usize {
+        let mut sum = 0;
+        for symbol in self.symbols() {
+            sum += self.interval_width(symbol);
+        }
+        sum
+    }
+
     /// This is c_j.
     fn interval_lower_bound(&self, symbol: &Self::S) -> usize {
         let mut sum = 0;
