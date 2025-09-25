@@ -1,9 +1,7 @@
-use std::panic::PanicHookInfo;
-
 use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit::{self, One, Zero};
 
-struct Encoder<S, A, const BITS_OF_PRECISION: u32>
+pub struct Encoder<S, A, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
     A: Alphabet<S = S>,
@@ -13,12 +11,55 @@ where
 
 /// Errors that can occur while encoding
 #[derive(thiserror::Error, Debug, PartialEq)]
-enum EncodeError {
+pub enum EncodeError {
     #[error("Stream not terminated by EOF symbol")]
     UnterminatedStream,
 }
 
-enum EncoderOutputState {
+/// Encoder Algorithm
+/// Adapted from mathematicalmonk's ["Finite-precision arithmetic coding - Encoder"][1]
+///
+/// [1]: https://youtu.be/9vhbKiwjJo8?si=qXYFJEJ3o-Jx_ekp
+///
+/// ```text
+/// Input Stream: x_1, ..., x_k, EOF
+/// c: Vector of interval lower bounds
+/// d: Vector of interval upper bounds
+/// R: Sum of interval widths for all symbols
+///
+/// <-------------------------------------------------------- Initial
+/// a = 0, b = whole, s = 0
+/// for i = 1, ..., k+1      <------------------------------- TopOfSymbolLoop
+///     w = b - a
+///     b = a + round(w * d_x_i / R)
+///     a = a + round(w * c_x_i / R)
+///
+///     while b < half or a > half:  <----------------------- TopOfRescaleLoop
+///         if b < half:
+///             emit 0 and s 1's     
+///             s = 0,
+///             a = 2 * a            <----------------------- BLessThanHalf
+///             b = 2 * b
+///         elif a > half:
+///             emit 1 and s 0's     
+///             s = 0
+///             a = 2 * (a - half)   <----------------------- AGreaterThanHalf
+///             b = 2 * (b - half)
+///     while a > quarter and b < 3 * quarter:
+///         s = s + 1
+///         a = 2 * (a - quarter)
+///         b = 2 * (b - quarter)
+///
+/// <-------------------------------------------------------- AfterSymbolLoop
+/// s = s + 1
+/// if a <= quarter:
+///     emit 0 and s 1's
+/// else:
+///     emit 1 and s 0's
+/// <-------------------------------------------------------- Final
+/// ```
+#[derive(Copy, Clone)]
+enum EncoderState {
     /// The initial state, before encoding has begun
     Initial,
     /// State at the top of the loop iterating over input symbols.
@@ -34,17 +75,15 @@ enum EncoderOutputState {
     AGreaterThanHalf,
     /// State after the loop iterating over input symbols has terminated.
     AfterSymbolLoop,
-    /// State at end of algorithm, when the final a value is less than or equal
-    /// to quarter
-    ALessThanEqQuarter,
-    /// State at the end of the algorithm, when the final a value is greater
-    /// than quarter.
-    AGreaterThanQuarter,
+    /// State in which the given bit is being emitted s times.
+    EmitSTimes(Bit),
     /// Final state, when encoding has finished.
     Final,
 }
 
-struct EncoderOutput<'e, S, A, I, const BITS_OF_PRECISION: u32>
+use EncoderState::*;
+
+pub struct EncoderOutput<'e, S, A, I, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
     A: Alphabet<S = S>,
@@ -52,8 +91,8 @@ where
 {
     input: I,
     encoder: &'e Encoder<S, A, BITS_OF_PRECISION>,
-
-    state: EncoderOutputState,
+    state: EncoderState,
+    after_emitting: Option<EncoderState>,
     a: usize,
     b: usize,
     w: usize,
@@ -61,12 +100,105 @@ where
     eof_reached: bool,
 }
 
-impl<S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISION: u32>
-    EncoderOutput<'_, S, A, I, BITS_OF_PRECISION>
+impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISION: u32>
+    EncoderOutput<'e, S, A, I, BITS_OF_PRECISION>
 {
     const WHOLE: usize = 2_usize.pow(BITS_OF_PRECISION);
     const HALF: usize = Self::WHOLE / 2;
     const QUARTER: usize = Self::WHOLE / 4;
+
+    /// Construct a new EncoderOutput from an input stream of symbols and an Encoder.
+    fn new(input: I, encoder: &'e Encoder<S, A, BITS_OF_PRECISION>) -> Self {
+        EncoderOutput {
+            input,
+            encoder,
+            state: EncoderState::Initial,
+            after_emitting: None,
+            a: 0,
+            b: 0,
+            w: 0,
+            s: 0,
+            eof_reached: false,
+        }
+    }
+
+    /// Determine the next bit in the encoded output. None indicates the end
+    /// of the output.
+    fn next_bit(&mut self) -> Option<Result<Bit, EncodeError>> {
+        loop {
+            match self.state {
+                Initial => {
+                    self.a = 0;
+                    self.b = Self::WHOLE;
+                    self.s = 0;
+                    self.state = TopOfSymbolLoop;
+                }
+                TopOfSymbolLoop => {
+                    if self.eof_reached {
+                        self.state = AfterSymbolLoop;
+                        continue;
+                    }
+                    match self.input.next() {
+                        None => return Some(Err(EncodeError::UnterminatedStream)),
+                        Some(symbol) => {
+                            if symbol == self.encoder.alphabet.eof() {
+                                self.eof_reached = true;
+                            }
+                            self.set_a_and_b_for_symbol(&symbol);
+                            self.state = TopOfRescaleLoop;
+                        }
+                    }
+                }
+                TopOfRescaleLoop => {
+                    if self.b < Self::HALF {
+                        self.state = EmitSTimes(One);
+                        self.after_emitting = Some(BLessThanHalf);
+                        return Some(Ok(Zero));
+                    } else if self.a > Self::HALF {
+                        self.state = EmitSTimes(Zero);
+                        self.after_emitting = Some(AGreaterThanHalf);
+                        return Some(Ok(One));
+                    } else {
+                        self.perform_middle_rescaling();
+                        self.state = TopOfSymbolLoop;
+                    }
+                }
+                BLessThanHalf => {
+                    self.a *= 2;
+                    self.b *= 2;
+                    self.state = TopOfRescaleLoop;
+                }
+                AGreaterThanHalf => {
+                    self.a = 2 * (self.a - Self::HALF);
+                    self.b = 2 * (self.b - Self::HALF);
+                    self.state = TopOfRescaleLoop;
+                }
+                AfterSymbolLoop => {
+                    self.s += 1;
+                    if self.a <= Self::QUARTER {
+                        self.state = EmitSTimes(One);
+                        self.after_emitting = Some(Final);
+                        return Some(Ok(Zero));
+                    } else {
+                        self.state = EmitSTimes(Zero);
+                        self.after_emitting = Some(Final);
+                        return Some(Ok(One));
+                    }
+                }
+                EmitSTimes(bit) => {
+                    if self.s > 0 {
+                        self.s -= 1;
+                        return Some(Ok(bit));
+                    } else {
+                        self.state = self.after_emitting.take().expect(
+                            "After emitting state must be set before transitioning to emitting",
+                        );
+                    }
+                }
+                Final => return None,
+            }
+        }
+    }
 
     fn set_a_and_b_for_symbol(&mut self, symbol: &S) {
         let total_interval_width = self.encoder.alphabet.total_interval_width();
@@ -74,7 +206,7 @@ impl<S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISI
         let lower_bound = self.encoder.alphabet.interval_lower_bound(symbol);
         self.w = self.b - self.a;
         self.b = self.a + (self.w * upper_bound) / total_interval_width;
-        self.a = self.a + (self.w * lower_bound) / total_interval_width;
+        self.a += (self.w * lower_bound) / total_interval_width;
     }
 
     fn perform_middle_rescaling(&mut self) {
@@ -86,136 +218,13 @@ impl<S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISI
     }
 }
 
-// Encoder Algorithm
-// Adapted from mathematicalmonk's "Finite-precision arithmetic coding - Encoder"
-// https://youtu.be/9vhbKiwjJo8?si=qXYFJEJ3o-Jx_ekp
-//
-// Input Stream: x_1, ..., x_k, EOF
-// c: Vector of interval lower bounds
-// d: Vector of interval upper bounds
-// R: Sum of interval widths for all symbols
-//
-// <-------------------------------------------------------- Initial
-// a = 0, b = whole, s = 0
-// for i = 1, ..., k+1      <------------------------------- TopOfSymbolLoop
-//     w = b - a
-//     b = a + round(w * d_x_i / R)
-//     a = a + round(w * c_x_i / R)
-//
-//     while b < half or a > half:  <----------------------- TopOfRescaleLoop
-//         if b < half:
-//             emit 0 and s 1's     <----------------------- BLessThanHalf
-//             s = 0,
-//             a = 2 * a
-//             b = 2 * b
-//         elif a > half:
-//             emit 1 and s 0's     <----------------------- AGreaterThanHalf
-//             s = 0
-//             a = 2 * (a - half)
-//             b = 2 * (b - half)
-//     while a > quarter and b < 3 * quarter:
-//         s = s + 1
-//         a = 2 * (a - quarter)
-//         b = 2 * (b - quarter)
-//
-// <-------------------------------------------------------- AfterSymbolLoop
-// s = s + 1
-// if a <= quarter:
-//     emit 0 and s 1's     <------------------------------- ALessThanEqQuarter
-// else:
-//     emit 1 and s 0's     <------------------------------- AGreaterThanQuarter
-// <-------------------------------------------------------- Final
 impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISION: u32>
     Iterator for EncoderOutput<'e, S, A, I, BITS_OF_PRECISION>
 {
     type Item = Result<Bit, EncodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.state {
-                EncoderOutputState::Initial => {
-                    self.a = 0;
-                    self.b = Self::WHOLE;
-                    self.s = 0;
-                    self.state = EncoderOutputState::TopOfSymbolLoop;
-                }
-                EncoderOutputState::TopOfSymbolLoop => {
-                    if self.eof_reached {
-                        self.state = EncoderOutputState::AfterSymbolLoop;
-                        continue;
-                    }
-                    match self.input.next() {
-                        None => return Some(Err(EncodeError::UnterminatedStream)),
-                        Some(symbol) => {
-                            if symbol == self.encoder.alphabet.eof() {
-                                self.eof_reached = true;
-                            }
-                            self.set_a_and_b_for_symbol(&symbol);
-                            self.state = EncoderOutputState::TopOfRescaleLoop;
-                        }
-                    }
-                }
-                EncoderOutputState::TopOfRescaleLoop => {
-                    if self.b < Self::HALF {
-                        self.state = EncoderOutputState::BLessThanHalf;
-                        return Some(Ok(Zero));
-                    } else if self.a > Self::HALF {
-                        self.state = EncoderOutputState::AGreaterThanHalf;
-                        return Some(Ok(One));
-                    } else {
-                        self.perform_middle_rescaling();
-                        self.state = EncoderOutputState::TopOfSymbolLoop;
-                    }
-                }
-                EncoderOutputState::BLessThanHalf => {
-                    if self.s > 0 {
-                        self.s -= 1;
-                        return Some(Ok(One));
-                    } else {
-                        self.a *= 2;
-                        self.b *= 2;
-                        self.state = EncoderOutputState::TopOfRescaleLoop;
-                    }
-                }
-                EncoderOutputState::AGreaterThanHalf => {
-                    if self.s > 0 {
-                        self.s -= 1;
-                        return Some(Ok(Zero));
-                    } else {
-                        self.a = 2 * (self.a - Self::HALF);
-                        self.b = 2 * (self.b - Self::HALF);
-                        self.state = EncoderOutputState::TopOfRescaleLoop;
-                    }
-                }
-                EncoderOutputState::AfterSymbolLoop => {
-                    self.s += 1;
-                    if self.a <= Self::QUARTER {
-                        self.state = EncoderOutputState::ALessThanEqQuarter;
-                        return Some(Ok(Zero));
-                    } else {
-                        self.state = EncoderOutputState::AGreaterThanQuarter;
-                        return Some(Ok(One));
-                    }
-                }
-                EncoderOutputState::ALessThanEqQuarter => {
-                    if self.s > 0 {
-                        self.s -= 1;
-                        return Some(Ok(One));
-                    } else {
-                        self.state = EncoderOutputState::Final;
-                    }
-                }
-                EncoderOutputState::AGreaterThanQuarter => {
-                    if self.s > 0 {
-                        self.s -= 1;
-                        return Some(Ok(Zero));
-                    } else {
-                        self.state = EncoderOutputState::Final;
-                    }
-                }
-                EncoderOutputState::Final => return None,
-            }
-        }
+        self.next_bit()
     }
 }
 
@@ -238,16 +247,7 @@ impl<S: Symbol, A: Alphabet<S = S>, const BITS_OF_PRECISION: u32> Encoder<S, A, 
     where
         I: IntoIterator<Item = S>,
     {
-        EncoderOutput {
-            input: input.into_iter(),
-            encoder: self,
-            state: EncoderOutputState::Initial,
-            a: 0,
-            b: 0,
-            w: 0,
-            s: 0,
-            eof_reached: false,
-        }
+        EncoderOutput::new(input.into_iter(), self)
     }
 }
 

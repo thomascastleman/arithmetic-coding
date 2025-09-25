@@ -1,4 +1,4 @@
-mod alphabet;
-mod decoder;
-mod encoder;
+pub mod alphabet;
+pub mod decoder;
+pub mod encoder;
 mod example;
