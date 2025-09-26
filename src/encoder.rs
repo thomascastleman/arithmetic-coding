@@ -38,12 +38,12 @@ pub enum EncodeError {
 ///         if b < half:
 ///             emit 0 and s 1's     
 ///             s = 0,
-///             a = 2 * a            <----------------------- BLessThanHalf
+///             a = 2 * a
 ///             b = 2 * b
 ///         elif a > half:
 ///             emit 1 and s 0's     
 ///             s = 0
-///             a = 2 * (a - half)   <----------------------- AGreaterThanHalf
+///             a = 2 * (a - half)
 ///             b = 2 * (b - half)
 ///     while a > quarter and b < 3 * quarter:
 ///         s = s + 1
@@ -58,7 +58,7 @@ pub enum EncodeError {
 ///     emit 1 and s 0's
 /// <-------------------------------------------------------- Final
 /// ```
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 enum EncoderState {
     /// The initial state, before encoding has begun
     Initial,
@@ -67,16 +67,8 @@ enum EncoderState {
     /// State at the top of the loop performing rescaling when the a-b interval
     /// is entirely below or above the midpoint.
     TopOfRescaleLoop,
-    /// State when the a-b interval falls into the left half of the 0-whole
-    /// interval, and needs to be scaled to straddle the midpoint.
-    BLessThanHalf,
-    /// State when the a-b interval falls into the right half of the 0-whole
-    /// interval, and needs to be scaled to straddle the midpoint.
-    AGreaterThanHalf,
     /// State after the loop iterating over input symbols has terminated.
     AfterSymbolLoop,
-    /// State in which the given bit is being emitted s times.
-    EmitSTimes(Bit),
     /// Final state, when encoding has finished.
     Final,
 }
@@ -92,7 +84,7 @@ where
     input: I,
     encoder: &'e Encoder<S, A, BITS_OF_PRECISION>,
     state: EncoderState,
-    after_emitting: Option<EncoderState>,
+    bits_to_emit: Option<Box<dyn Iterator<Item = Bit>>>,
     a: usize,
     b: usize,
     w: usize,
@@ -113,7 +105,7 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
             input,
             encoder,
             state: EncoderState::Initial,
-            after_emitting: None,
+            bits_to_emit: None,
             a: 0,
             b: 0,
             w: 0,
@@ -121,83 +113,90 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
             eof_reached: false,
         }
     }
-
     /// Determine the next bit in the encoded output. None indicates the end
     /// of the output.
     fn next_bit(&mut self) -> Option<Result<Bit, EncodeError>> {
         loop {
-            match self.state {
-                Initial => {
-                    self.a = 0;
-                    self.b = Self::WHOLE;
-                    self.s = 0;
-                    self.state = TopOfSymbolLoop;
-                }
-                TopOfSymbolLoop => {
-                    if self.eof_reached {
-                        self.state = AfterSymbolLoop;
-                        continue;
-                    }
-                    match self.input.next() {
-                        None => return Some(Err(EncodeError::UnterminatedStream)),
-                        Some(symbol) => {
-                            if symbol == self.encoder.alphabet.eof() {
-                                self.eof_reached = true;
-                            }
-                            self.set_a_and_b_for_symbol(&symbol);
-                            self.state = TopOfRescaleLoop;
-                        }
-                    }
-                }
-                TopOfRescaleLoop => {
-                    if self.b < Self::HALF {
-                        self.state = EmitSTimes(One);
-                        self.after_emitting = Some(BLessThanHalf);
-                        return Some(Ok(Zero));
-                    } else if self.a > Self::HALF {
-                        self.state = EmitSTimes(Zero);
-                        self.after_emitting = Some(AGreaterThanHalf);
-                        return Some(Ok(One));
-                    } else {
-                        self.perform_middle_rescaling();
-                        self.state = TopOfSymbolLoop;
-                    }
-                }
-                BLessThanHalf => {
-                    self.a *= 2;
-                    self.b *= 2;
-                    self.state = TopOfRescaleLoop;
-                }
-                AGreaterThanHalf => {
-                    self.a = 2 * (self.a - Self::HALF);
-                    self.b = 2 * (self.b - Self::HALF);
-                    self.state = TopOfRescaleLoop;
-                }
-                AfterSymbolLoop => {
-                    self.s += 1;
-                    if self.a <= Self::QUARTER {
-                        self.state = EmitSTimes(One);
-                        self.after_emitting = Some(Final);
-                        return Some(Ok(Zero));
-                    } else {
-                        self.state = EmitSTimes(Zero);
-                        self.after_emitting = Some(Final);
-                        return Some(Ok(One));
-                    }
-                }
-                EmitSTimes(bit) => {
-                    if self.s > 0 {
-                        self.s -= 1;
-                        return Some(Ok(bit));
-                    } else {
-                        self.state = self.after_emitting.take().expect(
-                            "After emitting state must be set before transitioning to emitting",
-                        );
-                    }
-                }
-                Final => return None,
+            // If there's a bit to emit next, emit it
+            match self.bits_to_emit.as_mut().and_then(|bits| bits.next()) {
+                Some(bit) => return Some(Ok(bit)),
+                None => self.bits_to_emit = None,
+            }
+
+            // No more bits and final state reached: end of output
+            if self.state == Final {
+                return None;
+            }
+
+            // Move to the next state in the state machine
+            match self.next_state() {
+                Err(e) => return Some(Err(e)),
+                Ok(next_state) => self.state = next_state,
             }
         }
+    }
+
+    fn next_state(&mut self) -> Result<EncoderState, EncodeError> {
+        match self.state {
+            Initial => self.execute_initial(),
+            TopOfSymbolLoop => self.execute_top_of_symbol_loop(),
+            TopOfRescaleLoop => self.execute_top_of_rescale_loop(),
+            AfterSymbolLoop => self.execute_after_symbol_loop(),
+            Final => Ok(Final),
+        }
+    }
+
+    fn execute_initial(&mut self) -> Result<EncoderState, EncodeError> {
+        self.a = 0;
+        self.b = Self::WHOLE;
+        self.s = 0;
+        Ok(TopOfSymbolLoop)
+    }
+
+    fn execute_top_of_symbol_loop(&mut self) -> Result<EncoderState, EncodeError> {
+        if self.eof_reached {
+            return Ok(AfterSymbolLoop);
+        }
+        match self.input.next() {
+            None => Err(EncodeError::UnterminatedStream),
+            Some(symbol) => {
+                if symbol == self.encoder.alphabet.eof() {
+                    self.eof_reached = true;
+                }
+                self.set_a_and_b_for_symbol(&symbol);
+                Ok(TopOfRescaleLoop)
+            }
+        }
+    }
+
+    fn execute_top_of_rescale_loop(&mut self) -> Result<EncoderState, EncodeError> {
+        if self.b < Self::HALF {
+            self.bits_to_emit = Some(self.zero_and_s_ones());
+            self.s = 0;
+            self.a *= 2;
+            self.b *= 2;
+            Ok(TopOfRescaleLoop)
+        } else if self.a > Self::HALF {
+            self.bits_to_emit = Some(self.one_and_s_zeros());
+            self.s = 0;
+            self.a = 2 * (self.a - Self::HALF);
+            self.b = 2 * (self.b - Self::HALF);
+            Ok(TopOfRescaleLoop)
+        } else {
+            self.perform_middle_rescaling();
+            Ok(TopOfSymbolLoop)
+        }
+    }
+
+    fn execute_after_symbol_loop(&mut self) -> Result<EncoderState, EncodeError> {
+        self.s += 1;
+        if self.a <= Self::QUARTER {
+            self.bits_to_emit = Some(self.zero_and_s_ones());
+        } else {
+            self.bits_to_emit = Some(self.one_and_s_zeros());
+        }
+
+        Ok(Final)
     }
 
     fn set_a_and_b_for_symbol(&mut self, symbol: &S) {
@@ -207,6 +206,14 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
         self.w = self.b - self.a;
         self.b = self.a + (self.w * upper_bound) / total_interval_width;
         self.a += (self.w * lower_bound) / total_interval_width;
+    }
+
+    fn one_and_s_zeros(&self) -> Box<dyn Iterator<Item = Bit>> {
+        Box::new(std::iter::once(One).chain(std::iter::repeat_n(Zero, self.s)))
+    }
+
+    fn zero_and_s_ones(&self) -> Box<dyn Iterator<Item = Bit>> {
+        Box::new(std::iter::once(Zero).chain(std::iter::repeat_n(One, self.s)))
     }
 
     fn perform_middle_rescaling(&mut self) {
