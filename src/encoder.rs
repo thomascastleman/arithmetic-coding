@@ -2,13 +2,6 @@ use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit::{self, One, Zero};
 use std::iter::{once, repeat_n};
 
-/// Errors that can occur while encoding
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum EncodeError {
-    #[error("Stream not terminated by EOF symbol")]
-    UnterminatedStream,
-}
-
 /// Encoder Algorithm
 /// Adapted from mathematicalmonk's ["Finite-precision arithmetic coding - Encoder"][1]
 ///
@@ -68,6 +61,13 @@ enum EncoderState {
 
 use EncoderState::*;
 
+/// Errors that can occur while encoding
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum EncodeError {
+    #[error("Stream not terminated by EOF symbol")]
+    UnterminatedStream,
+}
+
 pub struct EncoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
@@ -109,6 +109,7 @@ where
             eof_reached: false,
         }
     }
+
     /// Determine the next bit in the encoded output. None indicates the end
     /// of the output.
     fn next_bit(&mut self) -> Option<Result<Bit, EncodeError>> {
@@ -125,14 +126,16 @@ where
             }
 
             // Move to the next state in the state machine
-            match self.next_state() {
+            match self.execute() {
                 Err(e) => return Some(Err(e)),
                 Ok(next_state) => self.state = next_state,
             }
         }
     }
 
-    fn next_state(&mut self) -> Result<EncoderState, EncodeError> {
+    /// Execute the encoder state machine from its current state, producing the
+    /// next state or an error.
+    fn execute(&mut self) -> Result<EncoderState, EncodeError> {
         match self.state {
             Initial => self.execute_initial(),
             TopOfSymbolLoop => self.execute_top_of_symbol_loop(),
@@ -142,6 +145,10 @@ where
         }
     }
 
+    /// Execute from the Initial state, which initializes some of the state machine
+    /// variables.
+    ///
+    /// Returns the next state, or an error.
     fn execute_initial(&mut self) -> Result<EncoderState, EncodeError> {
         self.a = 0;
         self.b = Self::WHOLE;
@@ -149,6 +156,10 @@ where
         Ok(TopOfSymbolLoop)
     }
 
+    /// Execute from the TopOfSymbolLoop state, which pulls symbols from the
+    /// input stream, adjusts the current interval, and jumps to rescaling.
+    ///
+    /// Returns the next state, or an error.
     fn execute_top_of_symbol_loop(&mut self) -> Result<EncoderState, EncodeError> {
         if self.eof_reached {
             return Ok(AfterSymbolLoop);
@@ -165,6 +176,14 @@ where
         }
     }
 
+    /// Execute from the TopOfRescaleLoop state, which rescales the current
+    /// interval if it lies completely within the left or right half of the
+    /// full interval.
+    ///
+    /// If the interval is straddling the midpoint, middle rescaling is
+    /// performed if necessary.
+    ///
+    /// Returns the next state, or an error.
     fn execute_top_of_rescale_loop(&mut self) -> Result<EncoderState, EncodeError> {
         if self.b < Self::HALF {
             self.bits_to_emit = Some(self.zero_and_s_ones());
@@ -184,6 +203,10 @@ where
         }
     }
 
+    /// Execute from the AfterSymbolLoop state, which emits the final bits in
+    /// the output according to where the lefthand side of the interval ended up.
+    ///
+    /// Returns the next state, or an error.
     fn execute_after_symbol_loop(&mut self) -> Result<EncoderState, EncodeError> {
         self.s += 1;
         if self.a <= Self::QUARTER {
@@ -195,6 +218,11 @@ where
         Ok(Final)
     }
 
+    /// Adjust the current interval according to the given input symbol.
+    ///
+    /// You can think of this as "zooming in" the current interval to a sub-interval
+    /// whose width relative to the width of the current interval is proportional
+    /// to the probability of this symbol occurring in the input.
     fn set_a_and_b_for_symbol(&mut self, symbol: &S) {
         let total_interval_width = self.alphabet.total_interval_width();
         let upper_bound = self.alphabet.interval_upper_bound(symbol);
@@ -204,14 +232,18 @@ where
         self.a += (self.w * lower_bound) / total_interval_width;
     }
 
+    /// Construct an iterator that produces a one and s zeroes.
     fn one_and_s_zeros(&self) -> Box<dyn Iterator<Item = Bit>> {
         Box::new(once(One).chain(repeat_n(Zero, self.s)))
     }
 
+    /// Construct an iterator that produces a zero and s ones.
     fn zero_and_s_ones(&self) -> Box<dyn Iterator<Item = Bit>> {
         Box::new(once(Zero).chain(repeat_n(One, self.s)))
     }
 
+    /// Scale up the current interval until it is no longer completely
+    /// contained within the middle two quarters of the full interval.
     fn perform_middle_rescaling(&mut self) {
         while self.a > Self::QUARTER && self.b < (3 * Self::QUARTER) {
             self.s += 1;
@@ -231,7 +263,7 @@ impl<'a, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
     }
 }
 
-trait Encoder<S, A>
+pub trait Encoder<S, A>
 where
     S: Symbol,
     A: Alphabet<S = S>,
@@ -241,14 +273,15 @@ where
     /// The input stream must consist of symbols from the alphabet.
     /// This method will encode a single message from the stream (i.e. the
     /// symbols up until/including the EOF symbol).
-    fn encode<I, const BITS_OF_PRECISION: u32>(
+    fn encode<IntoI, const BITS_OF_PRECISION: u32>(
         &self,
-        input: I,
-    ) -> EncoderOutput<'_, S, A, I::IntoIter, BITS_OF_PRECISION>
+        input: IntoI,
+    ) -> EncoderOutput<'_, S, A, IntoI::IntoIter, BITS_OF_PRECISION>
     where
-        I: IntoIterator<Item = S>;
+        IntoI: IntoIterator<Item = S>;
 }
 
+/// Implementation of Encoder for any Alphabet.
 impl<S, A> Encoder<S, A> for A
 where
     S: Symbol,
@@ -301,6 +334,14 @@ mod test {
             encode(vec![B, A, C, Eof]),
             Ok(vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero]),
         )
+    }
+
+    #[test]
+    fn encode_message_with_middle_rescaling() {
+        assert_eq!(
+            encode(vec![B, B, Eof]),
+            Ok(vec![One, Zero, Zero, One, One, One])
+        );
     }
 
     #[test]

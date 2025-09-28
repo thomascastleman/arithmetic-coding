@@ -108,4 +108,17 @@ mod test {
             ],
         );
     }
+
+    #[test]
+    fn decode_message_with_middle_rescaling() {
+        assert_decoding_matches(
+            vec![One, Zero, Zero, One, One, One],
+            vec![
+                DecodedSymbol(B),
+                DecodedSymbol(B),
+                DecodedSymbol(Eof),
+                Done(6),
+            ],
+        );
+    }
 }
