@@ -1,13 +1,6 @@
 use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit::{self, One, Zero};
-
-pub struct Encoder<S, A, const BITS_OF_PRECISION: u32>
-where
-    S: Symbol,
-    A: Alphabet<S = S>,
-{
-    alphabet: A,
-}
+use std::iter::{once, repeat_n};
 
 /// Errors that can occur while encoding
 #[derive(thiserror::Error, Debug, PartialEq)]
@@ -75,14 +68,14 @@ enum EncoderState {
 
 use EncoderState::*;
 
-pub struct EncoderOutput<'e, S, A, I, const BITS_OF_PRECISION: u32>
+pub struct EncoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
     A: Alphabet<S = S>,
     I: Iterator<Item = S>,
 {
     input: I,
-    encoder: &'e Encoder<S, A, BITS_OF_PRECISION>,
+    alphabet: &'a A,
     state: EncoderState,
     bits_to_emit: Option<Box<dyn Iterator<Item = Bit>>>,
     a: usize,
@@ -92,18 +85,21 @@ where
     eof_reached: bool,
 }
 
-impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISION: u32>
-    EncoderOutput<'e, S, A, I, BITS_OF_PRECISION>
+impl<'a, S, A, I, const BITS_OF_PRECISION: u32> EncoderOutput<'a, S, A, I, BITS_OF_PRECISION>
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+    I: Iterator<Item = S>,
 {
     const WHOLE: usize = 2_usize.pow(BITS_OF_PRECISION);
     const HALF: usize = Self::WHOLE / 2;
     const QUARTER: usize = Self::WHOLE / 4;
 
-    /// Construct a new EncoderOutput from an input stream of symbols and an Encoder.
-    fn new(input: I, encoder: &'e Encoder<S, A, BITS_OF_PRECISION>) -> Self {
+    /// Construct a new EncoderOutput from an input stream of symbols and an alphabet.
+    fn new(input: I, alphabet: &'a A) -> Self {
         EncoderOutput {
             input,
-            encoder,
+            alphabet,
             state: EncoderState::Initial,
             bits_to_emit: None,
             a: 0,
@@ -160,7 +156,7 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
         match self.input.next() {
             None => Err(EncodeError::UnterminatedStream),
             Some(symbol) => {
-                if symbol == self.encoder.alphabet.eof() {
+                if symbol == self.alphabet.eof() {
                     self.eof_reached = true;
                 }
                 self.set_a_and_b_for_symbol(&symbol);
@@ -200,20 +196,20 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
     }
 
     fn set_a_and_b_for_symbol(&mut self, symbol: &S) {
-        let total_interval_width = self.encoder.alphabet.total_interval_width();
-        let upper_bound = self.encoder.alphabet.interval_upper_bound(symbol);
-        let lower_bound = self.encoder.alphabet.interval_lower_bound(symbol);
+        let total_interval_width = self.alphabet.total_interval_width();
+        let upper_bound = self.alphabet.interval_upper_bound(symbol);
+        let lower_bound = self.alphabet.interval_lower_bound(symbol);
         self.w = self.b - self.a;
         self.b = self.a + (self.w * upper_bound) / total_interval_width;
         self.a += (self.w * lower_bound) / total_interval_width;
     }
 
     fn one_and_s_zeros(&self) -> Box<dyn Iterator<Item = Bit>> {
-        Box::new(std::iter::once(One).chain(std::iter::repeat_n(Zero, self.s)))
+        Box::new(once(One).chain(repeat_n(Zero, self.s)))
     }
 
     fn zero_and_s_ones(&self) -> Box<dyn Iterator<Item = Bit>> {
-        Box::new(std::iter::once(Zero).chain(std::iter::repeat_n(One, self.s)))
+        Box::new(once(Zero).chain(repeat_n(One, self.s)))
     }
 
     fn perform_middle_rescaling(&mut self) {
@@ -225,8 +221,8 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
     }
 }
 
-impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISION: u32>
-    Iterator for EncoderOutput<'e, S, A, I, BITS_OF_PRECISION>
+impl<'a, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRECISION: u32>
+    Iterator for EncoderOutput<'a, S, A, I, BITS_OF_PRECISION>
 {
     type Item = Result<Bit, EncodeError>;
 
@@ -235,24 +231,35 @@ impl<'e, S: Symbol, A: Alphabet<S = S>, I: Iterator<Item = S>, const BITS_OF_PRE
     }
 }
 
-impl<S: Symbol, A: Alphabet<S = S>, const BITS_OF_PRECISION: u32> Encoder<S, A, BITS_OF_PRECISION> {
-    /// Create an encoder capable of encoding input that comes from the given
-    /// alphabet.
-    pub fn new(alphabet: A) -> Self {
-        Self { alphabet }
-    }
-
+trait Encoder<S, A>
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+{
     /// Encode a stream of symbols as a stream of bits.
     ///
-    /// The input stream must consist of symbols from the encoder's alphabet.
+    /// The input stream must consist of symbols from the alphabet.
     /// This method will encode a single message from the stream (i.e. the
     /// symbols up until/including the EOF symbol).
-    pub fn encode<'e, I>(
-        &'e self,
+    fn encode<I, const BITS_OF_PRECISION: u32>(
+        &self,
         input: I,
-    ) -> EncoderOutput<'e, S, A, I::IntoIter, BITS_OF_PRECISION>
+    ) -> EncoderOutput<'_, S, A, I::IntoIter, BITS_OF_PRECISION>
     where
-        I: IntoIterator<Item = S>,
+        I: IntoIterator<Item = S>;
+}
+
+impl<S, A> Encoder<S, A> for A
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+{
+    fn encode<IntoI, const BITS_OF_PRECISION: u32>(
+        &self,
+        input: IntoI,
+    ) -> EncoderOutput<'_, S, A, IntoI::IntoIter, BITS_OF_PRECISION>
+    where
+        IntoI: IntoIterator<Item = S>,
     {
         EncoderOutput::new(input.into_iter(), self)
     }
@@ -272,8 +279,7 @@ mod test {
     /// alphabet definition, and collecting the output into a single Result.
     fn encode(input: Vec<ExampleSymbol>) -> Result<Vec<Bit>, EncodeError> {
         let alphabet = ExampleAlphabet::new();
-        let encoder: Encoder<_, _, BITS_OF_PRECISION> = Encoder::new(alphabet);
-        encoder.encode(input).collect()
+        alphabet.encode::<_, BITS_OF_PRECISION>(input).collect()
     }
 
     #[test]
