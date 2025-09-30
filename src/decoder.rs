@@ -1,15 +1,54 @@
-use std::marker::PhantomData;
-
 use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit;
-struct Decoder<S, A, const BITS_OF_PRECISION: u32>
-where
-    S: Symbol,
-    A: Alphabet<S = S>,
-{
-    alphabet: A,
-}
 
+/// Decoder Algorithm
+/// Adapted from mathematicalmonk's ["Finite-precision arithmetic coding - Decoder"][1]
+///
+/// [1]: https://youtu.be/RFPwltOz1IU?si=1mhwNwfUjXGRrV-Y
+///
+/// ```text
+/// Input Bitstream: B_1, ..., B_m, B_m+1, ..., B_M
+/// c: Vector of interval lower bounds
+/// d: Vector of interval upper bounds
+/// R: Sum of interval widths for all symbols
+///
+/// a = 0, b = whole, z = 0, i = 1
+/// while i <= precision and i <= M:
+///     if B_i == 1:
+///         z = z + 2 ^ (precision - i)
+///     i = i + 1
+///
+/// while True:
+///     for j = 0, 1, ..., n:
+///         w = b - a
+///         b_0 = a + round(w * d_j / R)    
+///         a_0 = a + round(w * c_j / R)    
+///         if a_0 <= z < b_0:
+///             emit j, a = a_0, b = b_0
+///             if j == EOF:
+///                 quit
+///
+///     while b < half or a > half:
+///         if b < half:
+///             a = 2 * a
+///             b = 2 * b
+///             z = 2 * z
+///         elif a > half:
+///             a = 2 * (a - half)
+///             b = 2 * (b - half)
+///             z = 2 * (z - half)
+///         if i <= M and B_i == 1:
+///             z = z + 1
+///         i = i + 1
+///
+///     while a > quarter and b < 3 * quarter:
+///         a = 2 * (a - quarter)
+///         b = 2 * (b - quarter)
+///         z = 2 * (z - quarter)
+///         if i <= M and B_i == 1:
+///             z = z + 1
+///         i = i + 1
+/// ```
 #[derive(PartialEq, Debug)]
 enum DecoderEvent<S: Symbol> {
     /// A symbol was decoded from the input stream.
@@ -19,42 +58,87 @@ enum DecoderEvent<S: Symbol> {
     Done(usize),
 }
 
-struct DecoderOutput<S> {
-    _marker: PhantomData<S>,
+/// Errors that can occur while decoding
+#[derive(thiserror::Error, Debug, PartialEq)]
+pub enum DecodeError {
+    #[error("Unexpected end of bit stream before EOF decoded")]
+    UnterminatedStream,
 }
 
-impl<S> Iterator for DecoderOutput<S>
+struct DecoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
+    A: Alphabet<S = S>,
+    I: Iterator<Item = Bit>,
 {
-    type Item = DecoderEvent<S>;
+    input: I,
+    alphabet: &'a A,
+}
+
+impl<S, A, I, const BITS_OF_PRECISION: u32> Iterator
+    for DecoderOutput<'_, S, A, I, BITS_OF_PRECISION>
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+    I: Iterator<Item = Bit>,
+{
+    type Item = Result<DecoderEvent<S>, DecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        self.next_event()
     }
 }
 
-impl<S: Symbol, A: Alphabet<S = S>, const BITS_OF_PRECISION: u32> Decoder<S, A, BITS_OF_PRECISION> {
+impl<'a, S, A, I, const BITS_OF_PRECISION: u32> DecoderOutput<'a, S, A, I, BITS_OF_PRECISION>
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+    I: Iterator<Item = Bit>,
+{
     const WHOLE: usize = 2_usize.pow(BITS_OF_PRECISION);
     const HALF: usize = Self::WHOLE / 2;
     const QUARTER: usize = Self::WHOLE / 4;
 
-    /// Create a decoder capable of decoding a stream of bits that was encoded
-    /// using the given alphabet.
-    pub fn new(alphabet: A) -> Self {
-        Decoder { alphabet }
+    fn new(input: I, alphabet: &'a A) -> Self {
+        DecoderOutput { input, alphabet }
     }
 
+    fn next_event(&self) -> Option<Result<DecoderEvent<S>, DecodeError>> {
+        todo!()
+    }
+}
+
+trait Decoder<S, A>
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+{
     /// Decode a stream of bits as a stream of symbols.
     ///
     /// This method will decode a single message, yielding all the decoded
     /// symbols (including the EOF symbol), and then indicating completion
     /// with the Done event.
-    pub fn decode<I>(&self, input: &mut I) -> DecoderOutput<S>
+    fn decode<IntoI, const BITS_OF_PRECISION: u32>(
+        &self,
+        input: IntoI,
+    ) -> DecoderOutput<'_, S, A, IntoI::IntoIter, BITS_OF_PRECISION>
     where
-        I: Iterator<Item = Bit>,
+        IntoI: IntoIterator<Item = Bit>;
+}
+
+impl<S, A> Decoder<S, A> for A
+where
+    S: Symbol,
+    A: Alphabet<S = S>,
+{
+    fn decode<IntoI, const BITS_OF_PRECISION: u32>(
+        &self,
+        input: IntoI,
+    ) -> DecoderOutput<'_, S, A, IntoI::IntoIter, BITS_OF_PRECISION>
+    where
+        IntoI: IntoIterator<Item = Bit>,
     {
-        todo!()
+        DecoderOutput::new(input.into_iter(), self)
     }
 }
 
@@ -69,56 +153,51 @@ mod test {
     // The below test cases assume 32-bit precision
     const BITS_OF_PRECISION: u32 = 32;
 
-    fn assert_decoding_matches(input: Vec<Bit>, expected_output: Vec<DecoderEvent<ExampleSymbol>>) {
+    fn decode(input: Vec<Bit>) -> Result<Vec<DecoderEvent<ExampleSymbol>>, DecodeError> {
         let alphabet = ExampleAlphabet::new();
-        let decoder: Decoder<_, _, BITS_OF_PRECISION> = Decoder::new(alphabet);
-        let mut input_iter = input.into_iter();
-
-        let output: Vec<_> = decoder.decode(&mut input_iter).collect();
-
-        assert_eq!(output, expected_output);
+        alphabet.decode::<_, BITS_OF_PRECISION>(input).collect()
     }
 
     #[test]
     fn decode_empty_message() {
-        assert_decoding_matches(
-            vec![One, One, One, Zero, One],
-            vec![DecodedSymbol(Eof), Done(5)],
+        assert_eq!(
+            decode(vec![One, One, One, Zero, One]),
+            Ok(vec![DecodedSymbol(Eof), Done(5)]),
         );
     }
 
     #[test]
     fn decode_very_small_message() {
-        assert_decoding_matches(
-            vec![One, One, One, Zero, Zero, One, Zero],
-            vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)],
+        assert_eq!(
+            decode(vec![One, One, One, Zero, Zero, One, Zero]),
+            Ok(vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)]),
         );
     }
 
     #[test]
     fn decode_small_message() {
-        assert_decoding_matches(
-            vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero],
-            vec![
+        assert_eq!(
+            decode(vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero]),
+            Ok(vec![
                 DecodedSymbol(B),
                 DecodedSymbol(A),
                 DecodedSymbol(C),
                 DecodedSymbol(Eof),
                 Done(10),
-            ],
+            ]),
         );
     }
 
     #[test]
     fn decode_message_with_middle_rescaling() {
-        assert_decoding_matches(
-            vec![One, Zero, Zero, One, One, One],
-            vec![
+        assert_eq!(
+            decode(vec![One, Zero, Zero, One, One, One]),
+            Ok(vec![
                 DecodedSymbol(B),
                 DecodedSymbol(B),
                 DecodedSymbol(Eof),
                 Done(6),
-            ],
+            ]),
         );
     }
 }
