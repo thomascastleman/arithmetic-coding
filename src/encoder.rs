@@ -348,4 +348,14 @@ mod test {
     fn error_on_unterminated_stream() {
         assert_eq!(encode(vec![A, B, C]), Err(EncodeError::UnterminatedStream))
     }
+
+    #[test]
+    fn encodes_single_message() {
+        // Even if the input stream contains multiple messages (terminated by
+        // EOF), a call to encode encodes only the first one.
+        assert_eq!(
+            encode(vec![C, Eof, B, A, C, Eof]),
+            Ok(vec![One, One, One, Zero, Zero, One, Zero]),
+        )
+    }
 }

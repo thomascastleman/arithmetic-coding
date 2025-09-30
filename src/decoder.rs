@@ -200,4 +200,28 @@ mod test {
             ]),
         );
     }
+
+    #[test]
+    fn error_on_unterminated_stream() {
+        assert_eq!(
+            decode(vec![One, One, One, Zero]),
+            Err(DecodeError::UnterminatedStream)
+        )
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn decodes_single_message() {
+        // Even if the input stream contains multiple messages (terminated by
+        // EOF), a call to decode decodes only the first one.
+        assert_eq!(
+            decode(vec![
+                // First message: C, Eof
+                One, One, One, Zero, Zero, One, Zero, 
+                // Second message: B, A, C, Eof
+                Zero, One, Zero, One, One, One, Zero, Zero, One, Zero
+            ]),
+            Ok(vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)]),
+        )
+    }
 }
