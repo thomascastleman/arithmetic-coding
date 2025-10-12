@@ -1,6 +1,6 @@
 use crate::alphabet::{Alphabet, Symbol};
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum ExampleSymbol {
     A,
     B,

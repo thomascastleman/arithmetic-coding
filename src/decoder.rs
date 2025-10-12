@@ -1,5 +1,5 @@
 use crate::alphabet::{Alphabet, Symbol};
-use biterator::Bit;
+use biterator::Bit::{self, One, Zero};
 
 /// Decoder Algorithm
 /// Adapted from mathematicalmonk's ["Finite-precision arithmetic coding - Decoder"][1]
@@ -12,6 +12,7 @@ use biterator::Bit;
 /// d: Vector of interval upper bounds
 /// R: Sum of interval widths for all symbols
 ///
+/// <-------------------------------------------------------- Initial
 /// a = 0, b = whole, z = 0, i = 1
 /// while i <= precision and i <= M:
 ///     if B_i == 1:
@@ -19,7 +20,7 @@ use biterator::Bit;
 ///     i = i + 1
 ///
 /// while True:
-///     for j = 0, 1, ..., n:
+///     for j = 0, 1, ..., n: <------------------------------ TopOfSymbolLoop
 ///         w = b - a
 ///         b_0 = a + round(w * d_j / R)    
 ///         a_0 = a + round(w * c_j / R)    
@@ -27,8 +28,10 @@ use biterator::Bit;
 ///             emit j, a = a_0, b = b_0
 ///             if j == EOF:
 ///                 quit
+///             else:
+///                 break
 ///
-///     while b < half or a > half:
+///     while b < half or a > half: <------------------------ Rescaling
 ///         if b < half:
 ///             a = 2 * a
 ///             b = 2 * b
@@ -48,7 +51,20 @@ use biterator::Bit;
 ///         if i <= M and B_i == 1:
 ///             z = z + 1
 ///         i = i + 1
+/// <-------------------------------------------------------- CalculateLength
+/// <-------------------------------------------------------- Final
 /// ```
+#[derive(PartialEq)]
+enum DecoderState {
+    Initial,
+    TopOfSymbolLoop,
+    Rescaling,
+    CalculateLength,
+    Final,
+}
+
+use DecoderState::*;
+
 #[derive(PartialEq, Debug)]
 enum DecoderEvent<S: Symbol> {
     /// A symbol was decoded from the input stream.
@@ -73,6 +89,11 @@ where
 {
     input: I,
     alphabet: &'a A,
+    state: DecoderState,
+    event_to_emit: Option<DecoderEvent<S>>,
+    a: usize,
+    b: usize,
+    z: usize,
 }
 
 impl<S, A, I, const BITS_OF_PRECISION: u32> Iterator
@@ -100,11 +121,134 @@ where
     const QUARTER: usize = Self::WHOLE / 4;
 
     fn new(input: I, alphabet: &'a A) -> Self {
-        DecoderOutput { input, alphabet }
+        DecoderOutput {
+            input,
+            alphabet,
+            state: Initial,
+            event_to_emit: None,
+            a: 0,
+            b: 0,
+            z: 0,
+        }
     }
 
-    fn next_event(&self) -> Option<Result<DecoderEvent<S>, DecodeError>> {
-        todo!()
+    fn next_event(&mut self) -> Option<Result<DecoderEvent<S>, DecodeError>> {
+        loop {
+            if let Some(event) = self.event_to_emit.take() {
+                return Some(Ok(event));
+            }
+
+            if self.state == Final {
+                return None;
+            }
+
+            match self.execute() {
+                Err(e) => return Some(Err(e)),
+                Ok(next_state) => self.state = next_state,
+            };
+        }
+    }
+
+    fn execute(&mut self) -> Result<DecoderState, DecodeError> {
+        match self.state {
+            Initial => self.execute_initial(),
+            Rescaling => self.execute_rescaling(),
+            TopOfSymbolLoop => self.execute_top_of_symbol_loop(),
+            CalculateLength => self.execute_calculate_length(),
+            Final => Ok(Final),
+        }
+    }
+
+    fn execute_initial(&mut self) -> Result<DecoderState, DecodeError> {
+        self.a = 0;
+        self.b = Self::WHOLE;
+        self.initialize_z();
+        Ok(TopOfSymbolLoop)
+    }
+
+    fn initialize_z(&mut self) {
+        self.z = 0;
+        for i in 1..BITS_OF_PRECISION {
+            match self.input.next() {
+                None => break,
+                Some(Zero) => continue,
+                Some(One) => self.z += 2usize.pow(BITS_OF_PRECISION - i),
+            }
+        }
+    }
+
+    fn execute_top_of_symbol_loop(&mut self) -> Result<DecoderState, DecodeError> {
+        for symbol in self.alphabet.symbols() {
+            let (sub_a, sub_b) = self.subinterval_for_symbol(symbol);
+
+            if (sub_a..sub_b).contains(&self.z) {
+                self.event_to_emit = Some(DecoderEvent::DecodedSymbol(*symbol));
+                self.a = sub_a;
+                self.b = sub_b;
+
+                if *symbol == self.alphabet.eof() {
+                    return Ok(CalculateLength);
+                } else {
+                    return Ok(Rescaling);
+                }
+            }
+        }
+
+        unreachable!("z must be within [a, b), so some subinterval contains it")
+    }
+
+    fn subinterval_for_symbol(&self, symbol: &S) -> (usize, usize) {
+        let total_interval_width = self.alphabet.total_interval_width();
+        let upper_bound = self.alphabet.interval_upper_bound(symbol);
+        let lower_bound = self.alphabet.interval_lower_bound(symbol);
+        let w = self.b - self.a;
+        let sub_b = self.a + (w * upper_bound) / total_interval_width;
+        let sub_a = self.a + (w * lower_bound) / total_interval_width;
+        (sub_a, sub_b)
+    }
+
+    fn execute_rescaling(&mut self) -> Result<DecoderState, DecodeError> {
+        self.side_rescaling();
+        self.middle_rescaling();
+        Ok(TopOfSymbolLoop)
+    }
+
+    fn side_rescaling(&mut self) {
+        while self.b < Self::HALF || self.a > Self::HALF {
+            if self.b < Self::HALF {
+                self.a *= 2;
+                self.b *= 2;
+                self.z *= 2;
+            } else if self.a > Self::HALF {
+                self.a = 2 * (self.a - Self::HALF);
+                self.b = 2 * (self.b - Self::HALF);
+                self.z = 2 * (self.z - Self::HALF);
+            }
+
+            self.add_next_bit_to_z();
+        }
+    }
+
+    fn middle_rescaling(&mut self) {
+        while self.a > Self::QUARTER && self.b < 3 * Self::QUARTER {
+            self.a = 2 * (self.a - Self::QUARTER);
+            self.b = 2 * (self.b - Self::QUARTER);
+            self.z = 2 * (self.z - Self::QUARTER);
+            self.add_next_bit_to_z();
+        }
+    }
+
+    fn add_next_bit_to_z(&mut self) {
+        if let Some(One) = self.input.next() {
+            self.z += 1;
+        }
+    }
+
+    fn execute_calculate_length(&mut self) -> Result<DecoderState, DecodeError> {
+        // TODO(tcastleman) Determine the number of bits that were used to encode
+        // the message that was just decoded.
+        self.event_to_emit = Some(DecoderEvent::Done(0));
+        Ok(Final)
     }
 }
 

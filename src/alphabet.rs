@@ -1,4 +1,4 @@
-pub trait Symbol: PartialEq {}
+pub trait Symbol: PartialEq + Copy {}
 
 pub trait Alphabet {
     type S: Symbol;

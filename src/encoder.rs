@@ -100,7 +100,7 @@ where
         EncoderOutput {
             input,
             alphabet,
-            state: EncoderState::Initial,
+            state: Initial,
             bits_to_emit: None,
             a: 0,
             b: 0,
