@@ -31,6 +31,7 @@ use std::iter::{once, repeat_n};
 ///             s = 0
 ///             a = 2 * (a - half)
 ///             b = 2 * (b - half)
+///
 ///     while a > quarter and b < 3 * quarter:
 ///         s = s + 1
 ///         a = 2 * (a - quarter)

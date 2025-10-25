@@ -77,6 +77,12 @@ enum DecoderEvent<S: Symbol> {
 /// Errors that can occur while decoding
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum DecodeError {
+    // TODO(tcastleman) This error condition is not valid, because every bit
+    // stream will decode to *some* stream of symbols. There is no way to detect
+    // that we ran out of bits while decoding because the decoder input is just
+    // a number and any number is a valid encoding of some stream.
+    //
+    // Remove this variant and probably the entire enum.
     #[error("Unexpected end of bit stream before EOF decoded")]
     UnterminatedStream,
 }
@@ -94,6 +100,7 @@ where
     a: usize,
     b: usize,
     z: usize,
+    z_rescale_counter: usize,
 }
 
 impl<S, A, I, const BITS_OF_PRECISION: u32> Iterator
@@ -129,6 +136,7 @@ where
             a: 0,
             b: 0,
             z: 0,
+            z_rescale_counter: 0,
         }
     }
 
@@ -239,6 +247,7 @@ where
     }
 
     fn add_next_bit_to_z(&mut self) {
+        self.z_rescale_counter += 1;
         if let Some(One) = self.input.next() {
             self.z += 1;
         }
@@ -247,6 +256,23 @@ where
     fn execute_calculate_length(&mut self) -> Result<DecoderState, DecodeError> {
         // TODO(tcastleman) Determine the number of bits that were used to encode
         // the message that was just decoded.
+        //
+        // Find z_1 ... z_j 0 0 0 0 such that the interval corresponding to this
+        // number is contained in [a, b)
+        //
+        // m = j + (number of times z was rescaled)
+        //
+        // Idea for finding j:
+        // for k in 1..BITS_OF_PRECISION
+        //     a' = z_1 ... z_k 0 ... 0
+        //     b' = z_1 ... z_k 1 ... 1
+        //     if a' >= a and b' <= b
+        //         j = k
+        //         break
+        //
+        // Is there ever a case where b' is <= b but adding more 1s would be
+        // > b? (i.e. k bits of z wouldn't describe an interval strictly contained
+        // in a..b)
         self.event_to_emit = Some(DecoderEvent::Done(0));
         Ok(Final)
     }
@@ -343,14 +369,6 @@ mod test {
                 Done(6),
             ]),
         );
-    }
-
-    #[test]
-    fn error_on_unterminated_stream() {
-        assert_eq!(
-            decode(vec![One, One, One, Zero]),
-            Err(DecodeError::UnterminatedStream)
-        )
     }
 
     #[test]
