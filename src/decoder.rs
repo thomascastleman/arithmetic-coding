@@ -1,5 +1,6 @@
 use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit::{self, One, Zero};
+use log::debug;
 
 /// Decoder Algorithm
 /// Adapted from mathematicalmonk's ["Finite-precision arithmetic coding - Decoder"][1]
@@ -54,7 +55,7 @@ use biterator::Bit::{self, One, Zero};
 /// <-------------------------------------------------------- CalculateLength
 /// <-------------------------------------------------------- Final
 /// ```
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum DecoderState {
     Initial,
     TopOfSymbolLoop,
@@ -115,6 +116,12 @@ where
     const QUARTER: usize = Self::WHOLE / 4;
 
     fn new(input: I, alphabet: &'a A) -> Self {
+        debug!(
+            "Decoding with {BITS_OF_PRECISION} bits (whole={} half={} quarter={})",
+            Self::WHOLE,
+            Self::HALF,
+            Self::QUARTER
+        );
         DecoderOutput {
             input,
             alphabet,
@@ -130,6 +137,7 @@ where
     fn next_event(&mut self) -> Option<DecoderEvent<S>> {
         loop {
             if let Some(event) = self.event_to_emit.take() {
+                debug!("Emitting event: {event:?}");
                 return Some(event);
             }
 
@@ -142,13 +150,17 @@ where
     }
 
     fn execute(&mut self) -> DecoderState {
-        match self.state {
+        debug!("Executing {:?} state", self.state);
+        debug!("[pre]  a={:<12} b={:<12} z={:<12}", self.a, self.b, self.z);
+        let next = match self.state {
             Initial => self.execute_initial(),
             Rescaling => self.execute_rescaling(),
             TopOfSymbolLoop => self.execute_top_of_symbol_loop(),
             CalculateLength => self.execute_calculate_length(),
             Final => Final,
-        }
+        };
+        debug!("[post] a={:<12} b={:<12} z={:<12}", self.a, self.b, self.z);
+        next
     }
 
     fn execute_initial(&mut self) -> DecoderState {
@@ -162,7 +174,14 @@ where
         self.z = 0;
         for i in 1..BITS_OF_PRECISION {
             match self.input.next() {
-                None => break,
+                None => {
+                    debug!(
+                        "Initialized z with {} bits from input (z={})",
+                        i - 1,
+                        self.z
+                    );
+                    break;
+                }
                 Some(Zero) => continue,
                 Some(One) => self.z += 2usize.pow(BITS_OF_PRECISION - i),
             }
@@ -208,10 +227,12 @@ where
     fn side_rescaling(&mut self) {
         while self.b < Self::HALF || self.a > Self::HALF {
             if self.b < Self::HALF {
+                debug!("Interval fully contained in 0 half");
                 self.a *= 2;
                 self.b *= 2;
                 self.z *= 2;
             } else if self.a > Self::HALF {
+                debug!("Interval fully contained in 1 half");
                 self.a = 2 * (self.a - Self::HALF);
                 self.b = 2 * (self.b - Self::HALF);
                 self.z = 2 * (self.z - Self::HALF);
@@ -223,6 +244,10 @@ where
 
     fn middle_rescaling(&mut self) {
         while self.a > Self::QUARTER && self.b < 3 * Self::QUARTER {
+            debug!(
+                "Middle rescaling a={:<12} b={:<12} z={:<12}",
+                self.a, self.b, self.z
+            );
             self.a = 2 * (self.a - Self::QUARTER);
             self.b = 2 * (self.b - Self::QUARTER);
             self.z = 2 * (self.z - Self::QUARTER);
@@ -235,15 +260,21 @@ where
         if let Some(One) = self.input.next() {
             self.z += 1;
         }
+
+        debug!("Next bit: {}", self.z & 1);
     }
 
+    /// Determine the number of bits that were used to encode the message that
+    /// was just decoded.
+    ///
+    /// We do this by determining the number of bits of z that are necessary
+    /// for unambiguously indicating the [a, b) interval, and add this to the
+    /// number of bits of z that we've already discarded via rescaling.
     fn execute_calculate_length(&mut self) -> DecoderState {
-        // Determine the number of bits that were used to encode the message that
-        // was just decoded. We do this by determining the number of bits of z
-        // that are necessary for unambiguously indicating the [a, b) interval,
-        // and add this to the number of bits of z that we've already discarded
-        // via rescaling.
-        let encoded_message_length = self.minimal_z_prefix_size() as usize + self.z_rescale_counter;
+        let prefix_size = self.minimal_z_prefix_size() as usize;
+        debug!("Minimal prefix of z: {prefix_size} bits");
+
+        let encoded_message_length = prefix_size + self.z_rescale_counter;
         self.event_to_emit = Some(DecoderEvent::Done(encoded_message_length));
         Final
     }
@@ -311,11 +342,14 @@ mod test {
     use DecoderEvent::*;
     use ExampleSymbol::*;
     use biterator::Bit::{One, Zero};
+    use test_log::test;
 
     // The below test cases assume 32-bit precision
     const BITS_OF_PRECISION: u32 = 32;
 
     // TODO(tcastleman) Tests where size of encoding < precision
+    // TODO(tcastleman) Quickcheck tests for encoding/decoding composition
+    // TODO(tcastleman) Quickcheck tests for correct message length decode
 
     fn decode(input: Vec<Bit>) -> Vec<DecoderEvent<ExampleSymbol>> {
         let alphabet = ExampleAlphabet::new();

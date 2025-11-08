@@ -1,4 +1,4 @@
-pub trait Symbol: PartialEq + Copy {}
+pub trait Symbol: PartialEq + Copy + std::fmt::Debug {}
 
 pub trait Alphabet {
     type S: Symbol;

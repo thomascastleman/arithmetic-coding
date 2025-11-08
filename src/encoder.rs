@@ -1,5 +1,6 @@
 use crate::alphabet::{Alphabet, Symbol};
 use biterator::Bit::{self, One, Zero};
+use log::debug;
 use std::iter::{once, repeat_n};
 
 /// Encoder Algorithm
@@ -45,7 +46,7 @@ use std::iter::{once, repeat_n};
 ///     emit 1 and s 0's
 /// <-------------------------------------------------------- Final
 /// ```
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 enum EncoderState {
     /// The initial state, before encoding has begun
     Initial,
@@ -81,7 +82,6 @@ where
     bits_to_emit: Option<Box<dyn Iterator<Item = Bit>>>,
     a: usize,
     b: usize,
-    w: usize,
     s: usize,
     eof_reached: bool,
 }
@@ -98,6 +98,12 @@ where
 
     /// Construct a new EncoderOutput from an input stream of symbols and an alphabet.
     fn new(input: I, alphabet: &'a A) -> Self {
+        debug!(
+            "Encoding with {BITS_OF_PRECISION} bits (whole={} half={} quarter={})",
+            Self::WHOLE,
+            Self::HALF,
+            Self::QUARTER
+        );
         EncoderOutput {
             input,
             alphabet,
@@ -105,7 +111,6 @@ where
             bits_to_emit: None,
             a: 0,
             b: 0,
-            w: 0,
             s: 0,
             eof_reached: false,
         }
@@ -117,7 +122,10 @@ where
         loop {
             // If there's a bit to emit next, emit it
             match self.bits_to_emit.as_mut().and_then(|bits| bits.next()) {
-                Some(bit) => return Some(Ok(bit)),
+                Some(bit) => {
+                    debug!("Emitting {bit}");
+                    return Some(Ok(bit));
+                }
                 None => self.bits_to_emit = None,
             }
 
@@ -137,13 +145,17 @@ where
     /// Execute the encoder state machine from its current state, producing the
     /// next state or an error.
     fn execute(&mut self) -> Result<EncoderState, EncodeError> {
-        match self.state {
+        debug!("Executing {:?} state", self.state);
+        debug!("[pre]  a={:<12} b={:<12} s={:<12}", self.a, self.b, self.s);
+        let next = match self.state {
             Initial => self.execute_initial(),
             TopOfSymbolLoop => self.execute_top_of_symbol_loop(),
             TopOfRescaleLoop => self.execute_top_of_rescale_loop(),
             AfterSymbolLoop => self.execute_after_symbol_loop(),
             Final => Ok(Final),
-        }
+        };
+        debug!("[post] a={:<12} b={:<12} s={:<12}", self.a, self.b, self.s);
+        next
     }
 
     /// Execute from the Initial state, which initializes some of the state machine
@@ -168,6 +180,7 @@ where
         match self.input.next() {
             None => Err(EncodeError::UnterminatedStream),
             Some(symbol) => {
+                debug!("Next symbol to encode: {symbol:?}");
                 if symbol == self.alphabet.eof() {
                     self.eof_reached = true;
                 }
@@ -187,12 +200,14 @@ where
     /// Returns the next state, or an error.
     fn execute_top_of_rescale_loop(&mut self) -> Result<EncoderState, EncodeError> {
         if self.b < Self::HALF {
+            debug!("Interval fully contained in 0 half");
             self.bits_to_emit = Some(self.zero_and_s_ones());
             self.s = 0;
             self.a *= 2;
             self.b *= 2;
             Ok(TopOfRescaleLoop)
         } else if self.a > Self::HALF {
+            debug!("Interval fully contained in 1 half");
             self.bits_to_emit = Some(self.one_and_s_zeros());
             self.s = 0;
             self.a = 2 * (self.a - Self::HALF);
@@ -228,9 +243,9 @@ where
         let total_interval_width = self.alphabet.total_interval_width();
         let upper_bound = self.alphabet.interval_upper_bound(symbol);
         let lower_bound = self.alphabet.interval_lower_bound(symbol);
-        self.w = self.b - self.a;
-        self.b = self.a + (self.w * upper_bound) / total_interval_width;
-        self.a += (self.w * lower_bound) / total_interval_width;
+        let w = self.b - self.a;
+        self.b = self.a + (w * upper_bound) / total_interval_width;
+        self.a += (w * lower_bound) / total_interval_width;
     }
 
     /// Construct an iterator that produces a one and s zeroes.
@@ -247,6 +262,10 @@ where
     /// contained within the middle two quarters of the full interval.
     fn perform_middle_rescaling(&mut self) {
         while self.a > Self::QUARTER && self.b < (3 * Self::QUARTER) {
+            debug!(
+                "Middle rescaling a={:<12} b={:<12} s={:<12}",
+                self.a, self.b, self.s
+            );
             self.s += 1;
             self.a = 2 * (self.a - Self::QUARTER);
             self.b = 2 * (self.b - Self::QUARTER);
@@ -305,6 +324,7 @@ mod test {
     use crate::example::{ExampleAlphabet, ExampleSymbol};
     use ExampleSymbol::*;
     use biterator::Bit::{One, Zero};
+    use test_log::test;
 
     // The below test cases assume 32-bit precision
     const BITS_OF_PRECISION: u32 = 32;
