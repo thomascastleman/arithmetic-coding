@@ -74,19 +74,6 @@ enum DecoderEvent<S: Symbol> {
     Done(usize),
 }
 
-/// Errors that can occur while decoding
-#[derive(thiserror::Error, Debug, PartialEq)]
-pub enum DecodeError {
-    // TODO(tcastleman) This error condition is not valid, because every bit
-    // stream will decode to *some* stream of symbols. There is no way to detect
-    // that we ran out of bits while decoding because the decoder input is just
-    // a number and any number is a valid encoding of some stream.
-    //
-    // Remove this variant and probably the entire enum.
-    #[error("Unexpected end of bit stream before EOF decoded")]
-    UnterminatedStream,
-}
-
 struct DecoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
@@ -110,7 +97,7 @@ where
     A: Alphabet<S = S>,
     I: Iterator<Item = Bit>,
 {
-    type Item = Result<DecoderEvent<S>, DecodeError>;
+    type Item = DecoderEvent<S>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_event()
@@ -140,38 +127,35 @@ where
         }
     }
 
-    fn next_event(&mut self) -> Option<Result<DecoderEvent<S>, DecodeError>> {
+    fn next_event(&mut self) -> Option<DecoderEvent<S>> {
         loop {
             if let Some(event) = self.event_to_emit.take() {
-                return Some(Ok(event));
+                return Some(event);
             }
 
             if self.state == Final {
                 return None;
             }
 
-            match self.execute() {
-                Err(e) => return Some(Err(e)),
-                Ok(next_state) => self.state = next_state,
-            };
+            self.state = self.execute();
         }
     }
 
-    fn execute(&mut self) -> Result<DecoderState, DecodeError> {
+    fn execute(&mut self) -> DecoderState {
         match self.state {
             Initial => self.execute_initial(),
             Rescaling => self.execute_rescaling(),
             TopOfSymbolLoop => self.execute_top_of_symbol_loop(),
             CalculateLength => self.execute_calculate_length(),
-            Final => Ok(Final),
+            Final => Final,
         }
     }
 
-    fn execute_initial(&mut self) -> Result<DecoderState, DecodeError> {
+    fn execute_initial(&mut self) -> DecoderState {
         self.a = 0;
         self.b = Self::WHOLE;
         self.initialize_z();
-        Ok(TopOfSymbolLoop)
+        TopOfSymbolLoop
     }
 
     fn initialize_z(&mut self) {
@@ -185,7 +169,7 @@ where
         }
     }
 
-    fn execute_top_of_symbol_loop(&mut self) -> Result<DecoderState, DecodeError> {
+    fn execute_top_of_symbol_loop(&mut self) -> DecoderState {
         for symbol in self.alphabet.symbols() {
             let (sub_a, sub_b) = self.subinterval_for_symbol(symbol);
 
@@ -195,9 +179,9 @@ where
                 self.b = sub_b;
 
                 if *symbol == self.alphabet.eof() {
-                    return Ok(CalculateLength);
+                    return CalculateLength;
                 } else {
-                    return Ok(Rescaling);
+                    return Rescaling;
                 }
             }
         }
@@ -215,10 +199,10 @@ where
         (sub_a, sub_b)
     }
 
-    fn execute_rescaling(&mut self) -> Result<DecoderState, DecodeError> {
+    fn execute_rescaling(&mut self) -> DecoderState {
         self.side_rescaling();
         self.middle_rescaling();
-        Ok(TopOfSymbolLoop)
+        TopOfSymbolLoop
     }
 
     fn side_rescaling(&mut self) {
@@ -253,7 +237,7 @@ where
         }
     }
 
-    fn execute_calculate_length(&mut self) -> Result<DecoderState, DecodeError> {
+    fn execute_calculate_length(&mut self) -> DecoderState {
         // Determine the number of bits that were used to encode the message that
         // was just decoded. We do this by determining the number of bits of z
         // that are necessary for unambiguously indicating the [a, b) interval,
@@ -261,7 +245,7 @@ where
         // via rescaling.
         let encoded_message_length = self.minimal_z_prefix_size() as usize + self.z_rescale_counter;
         self.event_to_emit = Some(DecoderEvent::Done(encoded_message_length));
-        Ok(Final)
+        Final
     }
 
     /// Find the size of the smallest prefix of z that describes an interval
@@ -333,7 +317,7 @@ mod test {
 
     // TODO(tcastleman) Tests where size of encoding < precision
 
-    fn decode(input: Vec<Bit>) -> Result<Vec<DecoderEvent<ExampleSymbol>>, DecodeError> {
+    fn decode(input: Vec<Bit>) -> Vec<DecoderEvent<ExampleSymbol>> {
         let alphabet = ExampleAlphabet::new();
         alphabet.decode::<_, BITS_OF_PRECISION>(input).collect()
     }
@@ -342,7 +326,7 @@ mod test {
     fn decode_empty_message() {
         assert_eq!(
             decode(vec![One, One, One, Zero, One]),
-            Ok(vec![DecodedSymbol(Eof), Done(5)]),
+            vec![DecodedSymbol(Eof), Done(5)],
         );
     }
 
@@ -350,7 +334,7 @@ mod test {
     fn decode_very_small_message() {
         assert_eq!(
             decode(vec![One, One, One, Zero, Zero, One, Zero]),
-            Ok(vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)]),
+            vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)],
         );
     }
 
@@ -358,13 +342,13 @@ mod test {
     fn decode_small_message() {
         assert_eq!(
             decode(vec![Zero, One, Zero, One, One, One, Zero, Zero, One, Zero]),
-            Ok(vec![
+            vec![
                 DecodedSymbol(B),
                 DecodedSymbol(A),
                 DecodedSymbol(C),
                 DecodedSymbol(Eof),
                 Done(10),
-            ]),
+            ],
         );
     }
 
@@ -372,12 +356,12 @@ mod test {
     fn decode_message_with_middle_rescaling() {
         assert_eq!(
             decode(vec![One, Zero, Zero, One, One, One]),
-            Ok(vec![
+            vec![
                 DecodedSymbol(B),
                 DecodedSymbol(B),
                 DecodedSymbol(Eof),
                 Done(6),
-            ]),
+            ],
         );
     }
 
@@ -393,7 +377,7 @@ mod test {
                 // Second message: B, A, C, Eof
                 Zero, One, Zero, One, One, One, Zero, Zero, One, Zero
             ]),
-            Ok(vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)]),
+            vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)],
         )
     }
 }
