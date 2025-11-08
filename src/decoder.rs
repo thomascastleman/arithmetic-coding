@@ -254,27 +254,35 @@ where
     }
 
     fn execute_calculate_length(&mut self) -> Result<DecoderState, DecodeError> {
-        // TODO(tcastleman) Determine the number of bits that were used to encode
-        // the message that was just decoded.
-        //
-        // Find z_1 ... z_j 0 0 0 0 such that the interval corresponding to this
-        // number is contained in [a, b)
-        //
-        // m = j + (number of times z was rescaled)
-        //
-        // Idea for finding j:
-        // for k in 1..BITS_OF_PRECISION
-        //     a' = z_1 ... z_k 0 ... 0
-        //     b' = z_1 ... z_k 1 ... 1
-        //     if a' >= a and b' <= b
-        //         j = k
-        //         break
-        //
-        // Is there ever a case where b' is <= b but adding more 1s would be
-        // > b? (i.e. k bits of z wouldn't describe an interval strictly contained
-        // in a..b)
-        self.event_to_emit = Some(DecoderEvent::Done(0));
+        // Determine the number of bits that were used to encode the message that
+        // was just decoded. We do this by determining the number of bits of z
+        // that are necessary for unambiguously indicating the [a, b) interval,
+        // and add this to the number of bits of z that we've already discarded
+        // via rescaling.
+        let encoded_message_length = self.minimal_z_prefix_size() as usize + self.z_rescale_counter;
+        self.event_to_emit = Some(DecoderEvent::Done(encoded_message_length));
         Ok(Final)
+    }
+
+    /// Find the size of the smallest prefix of z that describes an interval
+    /// contained in [a, b).
+    fn minimal_z_prefix_size(&self) -> u32 {
+        for bit_position in (0..BITS_OF_PRECISION).rev() {
+            // Generate a mask for the N most significant bits of z
+            let prefix_size = BITS_OF_PRECISION - bit_position;
+            let prefix_mask: usize = !((1 << bit_position) - 1);
+
+            let lower_bound = self.z & prefix_mask;
+            let upper_bound = (self.z & prefix_mask) | !prefix_mask;
+
+            if lower_bound >= self.a && upper_bound < self.b {
+                return prefix_size;
+            }
+        }
+
+        unreachable!(
+            "z must be within [a, b), so at minimum the prefix containing all of z is within [a, b)"
+        );
     }
 }
 
@@ -322,6 +330,8 @@ mod test {
 
     // The below test cases assume 32-bit precision
     const BITS_OF_PRECISION: u32 = 32;
+
+    // TODO(tcastleman) Tests where size of encoding < precision
 
     fn decode(input: Vec<Bit>) -> Result<Vec<DecoderEvent<ExampleSymbol>>, DecodeError> {
         let alphabet = ExampleAlphabet::new();
