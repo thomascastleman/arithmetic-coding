@@ -72,7 +72,7 @@ enum DecoderEvent<S: Symbol> {
     DecodedSymbol(S),
     /// Decoding of a single message is complete. The usize indicates how many
     /// bits of the input correspond to the decoded message.
-    Done(usize),
+    MessageLength(usize),
 }
 
 struct DecoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
@@ -205,7 +205,11 @@ where
             }
         }
 
-        unreachable!("z must be within [a, b), so some subinterval contains it")
+        // As z is within [a, b), some subinterval must contain it
+        unreachable!(
+            "No subinterval of [a, b) contained z (z={:<12} a={:<12} b={:<12})",
+            self.z, self.a, self.b
+        );
     }
 
     fn subinterval_for_symbol(&self, symbol: &S) -> (usize, usize) {
@@ -275,7 +279,7 @@ where
         debug!("Minimal prefix of z: {prefix_size} bits");
 
         let encoded_message_length = prefix_size + self.z_rescale_counter;
-        self.event_to_emit = Some(DecoderEvent::Done(encoded_message_length));
+        self.event_to_emit = Some(DecoderEvent::MessageLength(encoded_message_length));
         Final
     }
 
@@ -295,8 +299,11 @@ where
             }
         }
 
+        // As z is in [a, b), the prefix containing all of z's bits is necessarily
+        // also contained in this interval
         unreachable!(
-            "z must be within [a, b), so at minimum the prefix containing all of z is within [a, b)"
+            "No prefix of z is within [a, b) (z={:<12} a={:<12} b={:<12})",
+            self.z, self.a, self.b
         );
     }
 }
@@ -310,7 +317,7 @@ where
     ///
     /// This method will decode a single message, yielding all the decoded
     /// symbols (including the EOF symbol), and then indicating completion
-    /// with the Done event.
+    /// with the MessageLength event.
     fn decode<IntoI, const BITS_OF_PRECISION: u32>(
         &self,
         input: IntoI,
@@ -360,7 +367,7 @@ mod test {
     fn decode_empty_message() {
         assert_eq!(
             decode(vec![One, One, One, Zero, One]),
-            vec![DecodedSymbol(Eof), Done(5)],
+            vec![DecodedSymbol(Eof), MessageLength(5)],
         );
     }
 
@@ -368,7 +375,7 @@ mod test {
     fn decode_very_small_message() {
         assert_eq!(
             decode(vec![One, One, One, Zero, Zero, One, Zero]),
-            vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)],
+            vec![DecodedSymbol(C), DecodedSymbol(Eof), MessageLength(7)],
         );
     }
 
@@ -381,7 +388,7 @@ mod test {
                 DecodedSymbol(A),
                 DecodedSymbol(C),
                 DecodedSymbol(Eof),
-                Done(10),
+                MessageLength(10),
             ],
         );
     }
@@ -394,7 +401,7 @@ mod test {
                 DecodedSymbol(B),
                 DecodedSymbol(B),
                 DecodedSymbol(Eof),
-                Done(6),
+                MessageLength(6),
             ],
         );
     }
@@ -411,7 +418,7 @@ mod test {
                 // Second message: B, A, C, Eof
                 Zero, One, Zero, One, One, One, Zero, Zero, One, Zero
             ]),
-            vec![DecodedSymbol(C), DecodedSymbol(Eof), Done(7)],
+            vec![DecodedSymbol(C), DecodedSymbol(Eof), MessageLength(7)],
         )
     }
 }
