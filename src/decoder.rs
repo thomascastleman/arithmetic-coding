@@ -67,7 +67,7 @@ enum DecoderState {
 use DecoderState::*;
 
 #[derive(PartialEq, Debug)]
-enum DecoderEvent<S: Symbol> {
+pub enum DecoderEvent<S: Symbol> {
     /// A symbol was decoded from the input stream.
     DecodedSymbol(S),
     /// Decoding of a single message is complete. The usize indicates how many
@@ -75,7 +75,7 @@ enum DecoderEvent<S: Symbol> {
     MessageLength(usize),
 }
 
-struct DecoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
+pub struct DecoderOutput<'a, S, A, I, const BITS_OF_PRECISION: u32>
 where
     S: Symbol,
     A: Alphabet<S = S>,
@@ -308,7 +308,7 @@ where
     }
 }
 
-trait Decoder<S, A>
+pub trait Decoder<S, A>
 where
     S: Symbol,
     A: Alphabet<S = S>,
@@ -353,10 +353,6 @@ mod test {
 
     // The below test cases assume 32-bit precision
     const BITS_OF_PRECISION: u32 = 32;
-
-    // TODO(tcastleman) Tests where size of encoding < precision
-    // TODO(tcastleman) Quickcheck tests for encoding/decoding composition
-    // TODO(tcastleman) Quickcheck tests for correct message length decode
 
     fn decode(input: Vec<Bit>) -> Vec<DecoderEvent<ExampleSymbol>> {
         let alphabet = ExampleAlphabet::new();

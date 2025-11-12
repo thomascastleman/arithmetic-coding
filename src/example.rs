@@ -1,7 +1,7 @@
 use crate::alphabet::{Alphabet, Symbol};
 
 #[derive(PartialEq, Debug, Copy, Clone)]
-pub enum ExampleSymbol {
+pub(crate) enum ExampleSymbol {
     A,
     B,
     C,
@@ -10,12 +10,12 @@ pub enum ExampleSymbol {
 
 impl Symbol for ExampleSymbol {}
 
-pub struct ExampleAlphabet {
+pub(crate) struct ExampleAlphabet {
     symbols: Vec<ExampleSymbol>,
 }
 
 impl ExampleAlphabet {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             symbols: vec![
                 ExampleSymbol::A,
