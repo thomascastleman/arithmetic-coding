@@ -78,6 +78,30 @@ impl Alphabet for NumAlphabet {
     }
 }
 
+struct ShrinkingNumAlphabet {
+    alphabet: NumAlphabet,
+}
+
+impl Iterator for ShrinkingNumAlphabet {
+    type Item = NumAlphabet;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Stop removing symbols when only EOF and one other symbol is left,
+        // because this is the smallest alphabet that can support arbitrary
+        // length input streams.
+        if self.alphabet.symbols.len() <= 2 {
+            return None;
+        }
+
+        self.alphabet.symbols.pop();
+        self.alphabet.interval_widths.pop();
+
+        Some(self.alphabet.clone())
+    }
+}
+
+const MAX_BITS_OF_PRECISION: u32 = 32;
+
 impl Arbitrary for NumAlphabet {
     fn arbitrary(g: &mut Gen) -> Self {
         let mut interval_widths = Vec::arbitrary(g);
@@ -85,27 +109,44 @@ impl Arbitrary for NumAlphabet {
         // Ensure that at least one element is present
         interval_widths.push(usize::arbitrary(g));
 
-        // Ensure all widths are greater than 0
+        // Due to the calculations done in the encoder/decoder to determine
+        // subintervals, there are constraints on how large R (the sum of all
+        // interval widths) can be.
+        //
+        // Specifically, we must be able to represent 2^precision * R as a usize.
+        // i.e. 2^precision * R <= usize::MAX
+        //                    R <= usize::MAX / 2^precision
+        let max_total_width = usize::MAX / 2usize.pow(MAX_BITS_OF_PRECISION);
+        let max_width = max_total_width / interval_widths.len();
+
         for width in &mut interval_widths {
+            // Ensure all widths are greater than 0
             if *width == 0 {
                 *width = 1;
             }
+
+            // Ensure the interval widths sum to a suitably small R value (see above)
+            *width %= max_width;
         }
 
         NumAlphabet::new(interval_widths)
     }
 
-    // TODO(tcastleman) Implement shrink
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        Box::new(ShrinkingNumAlphabet {
+            alphabet: self.clone(),
+        })
+    }
 }
 
 /// Property test verifying that decoding an encoded stream of symbols results
 /// in the same stream of symbols.
 #[quickcheck]
-fn encoder_and_decoder_cancel(alphabet: NumAlphabet, input_length: usize) -> bool {
+fn encoder_and_decoder_cancel(alphabet: NumAlphabet, input_length: u16) -> bool {
     // TODO(tcastleman) Use a macro to instantiate this check with different precision values?
     const BITS_OF_PRECISION: u32 = 32;
 
-    let input = alphabet.random_symbol_stream(input_length);
+    let input = alphabet.random_symbol_stream(input_length as usize);
     let expected_output = input.clone();
 
     let encoder_result: Result<Vec<_>, EncodeError> =

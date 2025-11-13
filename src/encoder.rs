@@ -116,6 +116,10 @@ where
         }
     }
 
+    fn assert_sanity(&self) {
+        assert!(self.a < self.b, "a ({}) >= b ({})", self.a, self.b);
+    }
+
     /// Determine the next bit in the encoded output. None indicates the end
     /// of the output.
     fn next_bit(&mut self) -> Option<Result<Bit, EncodeError>> {
@@ -154,6 +158,7 @@ where
             AfterSymbolLoop => self.execute_after_symbol_loop(),
             Final => Ok(Final),
         };
+        self.assert_sanity();
         debug!("[post] a={:<12} b={:<12} s={:<12}", self.a, self.b, self.s);
         next
     }
@@ -266,6 +271,7 @@ where
                 "Middle rescaling a={:<12} b={:<12} s={:<12}",
                 self.a, self.b, self.s
             );
+            self.assert_sanity();
             self.s += 1;
             self.a = 2 * (self.a - Self::QUARTER);
             self.b = 2 * (self.b - Self::QUARTER);
