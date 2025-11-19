@@ -1,12 +1,13 @@
 use arithmetic_coding::alphabet::{Alphabet, Symbol};
 use arithmetic_coding::decoder::{Decoder, DecoderEvent};
 use arithmetic_coding::encoder::{EncodeError, Encoder};
+use biterator::Bit;
 use quickcheck::{Arbitrary, Gen};
 use quickcheck_macros::quickcheck;
 use rand::Rng;
+use test_log::test;
 
 // TODO(tcastleman) Tests where size of encoding > precision
-// TODO(tcastleman) Quickcheck tests for correct message length decode
 
 /// A symbol type that wraps an integer, so we can easily generate
 /// arbitrary-sized alphabets composed of these symbols. EOF is represented
@@ -106,7 +107,13 @@ impl Arbitrary for NumAlphabet {
     fn arbitrary(g: &mut Gen) -> Self {
         let mut interval_widths = Vec::arbitrary(g);
 
-        // Ensure that at least one element is present
+        // Ensure that at least two interval widths are present, to guarantee
+        // that there is room for 1) an EOF symbol, and 2) a non-EOF symbol.
+        // This is the smallest possible alphabet for which we can generate
+        // arbitrary-length random input sequences. An alphabet consisting
+        // only of EOF isn't capable of this because EOF immediately terminates
+        // the input.
+        interval_widths.push(usize::arbitrary(g));
         interval_widths.push(usize::arbitrary(g));
 
         // Due to the calculations done in the encoder/decoder to determine
@@ -139,31 +146,72 @@ impl Arbitrary for NumAlphabet {
     }
 }
 
-/// Property test verifying that decoding an encoded stream of symbols results
-/// in the same stream of symbols.
-#[quickcheck]
-fn encoder_and_decoder_cancel(alphabet: NumAlphabet, input_length: u16) -> bool {
-    // TODO(tcastleman) Use a macro to instantiate this check with different precision values?
-    const BITS_OF_PRECISION: u32 = 32;
+const BITS_OF_PRECISION: u32 = 32;
 
-    let input = alphabet.random_symbol_stream(input_length as usize);
-    let expected_output = input.clone();
-
+fn encode(alphabet: &NumAlphabet, input: Vec<NumSymbol>) -> Vec<Bit> {
     let encoder_result: Result<Vec<_>, EncodeError> =
         alphabet.encode::<_, BITS_OF_PRECISION>(input).collect();
-    let bits = encoder_result.expect("Encoding failed");
-    let encoded_size = bits.len();
+    encoder_result.expect("Encoding failed")
+}
 
+struct Decoded {
+    symbols: Vec<NumSymbol>,
+    length: Option<usize>,
+}
+
+fn decode(alphabet: &NumAlphabet, bits: Vec<Bit>) -> Decoded {
     let decoder_events = alphabet.decode::<_, BITS_OF_PRECISION>(bits);
-    let mut decoded_symbols = Vec::new();
-    let mut decoded_length = 0;
+    let mut symbols = Vec::new();
+    let mut length = None;
 
     for event in decoder_events {
         match event {
-            DecoderEvent::DecodedSymbol(symbol) => decoded_symbols.push(symbol),
-            DecoderEvent::MessageLength(length) => decoded_length = length,
+            DecoderEvent::DecodedSymbol(symbol) => symbols.push(symbol),
+            DecoderEvent::MessageLength(message_length) => length = Some(message_length),
         };
     }
 
-    decoded_symbols == expected_output && decoded_length == encoded_size
+    Decoded { symbols, length }
+}
+
+/// Property test verifying that decoding an encoded stream of symbols results
+/// in the same stream of symbols.
+#[quickcheck]
+fn encoder_and_decoder_cancel(alphabet: NumAlphabet, input_length: u8) -> bool {
+    let input = alphabet.random_symbol_stream(input_length as usize);
+    let expected_output = input.clone();
+
+    let bits = encode(&alphabet, input);
+    let decoded = decode(&alphabet, bits);
+
+    decoded.symbols == expected_output
+}
+
+/// Property test verifying that the decoder correctly calculates the number of
+/// bits from the input that comprise the decoded message.
+#[quickcheck]
+fn decoder_calculates_length(alphabet: NumAlphabet, input_length: u8) -> bool {
+    let input = alphabet.random_symbol_stream(input_length as usize);
+
+    let bits = encode(&alphabet, input);
+    let encoding_length = bits.len();
+
+    // TODO(tcastleman) Add random bits after the encoding
+    let decoded = decode(&alphabet, bits);
+
+    decoded.length == Some(encoding_length)
+}
+
+#[test]
+fn minimal_failure() {
+    let alphabet = NumAlphabet::new(vec![47549061, 9539461]);
+    let input: Vec<_> = std::iter::repeat_n(NumSymbol(1), 13)
+        .chain(std::iter::once(NumSymbol::eof()))
+        .collect();
+    let expected_output = input.clone();
+
+    let bits = encode(&alphabet, input);
+    let decoded = decode(&alphabet, bits);
+
+    assert_eq!(decoded.symbols, expected_output);
 }
