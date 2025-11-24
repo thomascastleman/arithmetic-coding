@@ -172,7 +172,7 @@ where
 
     fn initialize_z(&mut self) {
         self.z = 0;
-        for i in 1..BITS_OF_PRECISION {
+        for i in 1..=BITS_OF_PRECISION {
             match self.input.next() {
                 None => {
                     debug!(
