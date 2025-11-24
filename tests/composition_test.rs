@@ -102,6 +102,7 @@ impl Iterator for ShrinkingNumAlphabet {
 }
 
 const MAX_BITS_OF_PRECISION: u32 = 32;
+const QUARTER: usize = 2_usize.pow(MAX_BITS_OF_PRECISION) / 4;
 
 impl Arbitrary for NumAlphabet {
     fn arbitrary(g: &mut Gen) -> Self {
@@ -124,16 +125,23 @@ impl Arbitrary for NumAlphabet {
         // i.e. 2^precision * R <= usize::MAX
         //                    R <= usize::MAX / 2^precision
         let max_total_width = usize::MAX / 2usize.pow(MAX_BITS_OF_PRECISION);
+
+        // To ensure intervals don't sum to an R greater than the max, set a
+        // conservative upper limit by dividing the max R.
         let max_width = max_total_width / interval_widths.len();
 
-        for width in &mut interval_widths {
-            // Ensure all widths are greater than 0
-            if *width == 0 {
-                *width = 1;
-            }
+        // To ensure intervals aren't so small relative to R that they shrink to
+        // 0 when a and b are close enough together, set a lower limit. This is
+        // determined assuming the minimum difference between a and b is
+        // QUARTER = 2^precision / 4.
+        //
+        // In order to avoid shrinking to zero, each width must satisfy:
+        // (QUARTER * width) / R >= 1
+        let min_width = max_total_width / QUARTER;
 
-            // Ensure the interval widths sum to a suitably small R value (see above)
-            *width %= max_width;
+        // Scale all widths to be in [min_width, max_width)
+        for width in &mut interval_widths {
+            *width = min_width + (*width % (max_width - min_width));
         }
 
         NumAlphabet::new(interval_widths)
@@ -202,8 +210,10 @@ fn decoder_calculates_length(alphabet: NumAlphabet, input_length: u8) -> bool {
     decoded.length == Some(encoding_length)
 }
 
+/// A bug in which z was not initialized with N bits from the input (where N
+/// is the precision) caused this test to fail.
 #[test]
-fn minimal_failure() {
+fn z_initialization_regression_test() {
     let alphabet = NumAlphabet::new(vec![47549061, 9539461]);
     let input: Vec<_> = std::iter::repeat_n(NumSymbol(1), 13)
         .chain(std::iter::once(NumSymbol::eof()))
