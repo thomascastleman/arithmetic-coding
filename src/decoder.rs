@@ -115,6 +115,7 @@ where
     const HALF: usize = Self::WHOLE / 2;
     const QUARTER: usize = Self::WHOLE / 4;
 
+    /// Construct a new DecoderOutput from a stream of bits and an alphabet
     fn new(input: I, alphabet: &'a A) -> Self {
         debug!(
             "Decoding with {BITS_OF_PRECISION} bits (whole={} half={} quarter={})",
@@ -134,6 +135,8 @@ where
         }
     }
 
+    /// Continue the decoding process until the next event is emitted. None
+    /// indicates no more events are available.
     fn next_event(&mut self) -> Option<DecoderEvent<S>> {
         loop {
             if let Some(event) = self.event_to_emit.take() {
@@ -149,6 +152,8 @@ where
         }
     }
 
+    /// Execute the decoder state machine from its current state, producing the
+    /// next state.
     fn execute(&mut self) -> DecoderState {
         debug!("Executing {:?} state", self.state);
         debug!("[pre]  a={:<12} b={:<12} z={:<12}", self.a, self.b, self.z);
@@ -163,6 +168,9 @@ where
         next
     }
 
+    /// Execute from the Initial state, which initializes state variables.
+    ///
+    /// Returns the next state.
     fn execute_initial(&mut self) -> DecoderState {
         self.a = 0;
         self.b = Self::WHOLE;
@@ -170,6 +178,8 @@ where
         TopOfSymbolLoop
     }
 
+    /// Set z to its initial value by reading bits from the input and shifting
+    /// them into their appropriate positions.
     fn initialize_z(&mut self) {
         self.z = 0;
         for i in 1..=BITS_OF_PRECISION {
@@ -188,6 +198,10 @@ where
         }
     }
 
+    /// Execute from the TopOfSymbolLoop state, searching for the symbol
+    /// identified by the subinterval containing the current value of z.
+    ///
+    /// Returns the next state.
     fn execute_top_of_symbol_loop(&mut self) -> DecoderState {
         for symbol in self.alphabet.symbols() {
             let (sub_a, sub_b) = self.subinterval_for_symbol(symbol);
@@ -212,22 +226,32 @@ where
         );
     }
 
+    /// Determine the lower and upper bounds for the subinterval corresponding
+    /// to the given symbol.
     fn subinterval_for_symbol(&self, symbol: &S) -> (usize, usize) {
         let total_interval_width = self.alphabet.total_interval_width();
         let upper_bound = self.alphabet.interval_upper_bound(symbol);
         let lower_bound = self.alphabet.interval_lower_bound(symbol);
+
         let w = self.b - self.a;
         let sub_b = self.a + (w * upper_bound) / total_interval_width;
         let sub_a = self.a + (w * lower_bound) / total_interval_width;
+
         (sub_a, sub_b)
     }
 
+    /// Execute from the Rescaling state, performing rescaling operations as
+    /// necessary to prevent a and b from nearing too close to each other.
+    ///
+    /// Returns the next state.
     fn execute_rescaling(&mut self) -> DecoderState {
         self.side_rescaling();
         self.middle_rescaling();
         TopOfSymbolLoop
     }
 
+    /// Perform "side rescaling" by identifying scenarios in which the a-b range
+    /// lies entirely in the lower or upper half of the total region (from 0-WHOLE).
     fn side_rescaling(&mut self) {
         while self.b < Self::HALF || self.a > Self::HALF {
             if self.b < Self::HALF {
@@ -246,6 +270,9 @@ where
         }
     }
 
+    /// Perform "middle rescaling" by identifying scenarios in which a and b are
+    /// straddling the midpoint of the 0-WHOLE region and have grown close enough
+    /// together.
     fn middle_rescaling(&mut self) {
         while self.a > Self::QUARTER && self.b < 3 * Self::QUARTER {
             debug!(
@@ -259,6 +286,8 @@ where
         }
     }
 
+    /// Take the next bit from the input stream, and add it as the least
+    /// significant bit of z.
     fn add_next_bit_to_z(&mut self) {
         self.z_rescale_counter += 1;
         if let Some(One) = self.input.next() {
