@@ -324,6 +324,9 @@ where
             let upper_bound = (self.z & prefix_mask) | !prefix_mask;
 
             if lower_bound >= self.a && upper_bound < self.b {
+                debug!("Found minimal prefix ({prefix_size} bits)");
+                debug!("Lower bound {lower_bound:#066b} ({lower_bound})");
+                debug!("Upper bound {upper_bound:#066b} ({upper_bound})");
                 return prefix_size;
             }
         }

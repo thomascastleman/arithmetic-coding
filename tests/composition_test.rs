@@ -198,13 +198,21 @@ fn encoder_and_decoder_cancel(alphabet: NumAlphabet, input_length: u8) -> bool {
 /// Property test verifying that the decoder correctly calculates the number of
 /// bits from the input that comprise the decoded message.
 #[quickcheck]
-fn decoder_calculates_length(alphabet: NumAlphabet, input_length: u8) -> bool {
+fn decoder_calculates_length(
+    alphabet: NumAlphabet,
+    input_length: u8,
+    extra_bits: Vec<bool>,
+) -> bool {
     let input = alphabet.random_symbol_stream(input_length as usize);
 
-    let bits = encode(&alphabet, input);
+    let mut bits = encode(&alphabet, input);
     let encoding_length = bits.len();
 
-    // TODO(tcastleman) Add random bits after the encoding
+    // Append random extra bits after the encoded input, to validate that the
+    // decoder correctly extracts the portion of the bitstream relevant to the
+    // encoded input.
+    bits.extend(extra_bits.into_iter().map(Bit::from));
+
     let decoded = decode(&alphabet, bits);
 
     decoded.length == Some(encoding_length)
@@ -224,4 +232,17 @@ fn z_initialization_regression_test() {
     let decoded = decode(&alphabet, bits);
 
     assert_eq!(decoded.symbols, expected_output);
+}
+
+#[test]
+fn decoder_miscalculates_length() {
+    let alphabet = NumAlphabet::new(vec![72845840, 37260030]);
+    let input = vec![NumSymbol::eof()];
+
+    let bits = encode(&alphabet, input);
+    let encoding_length = bits.len();
+
+    let decoded = decode(&alphabet, bits);
+
+    assert_eq!(decoded.length, Some(encoding_length));
 }
