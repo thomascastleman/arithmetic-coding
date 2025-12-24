@@ -324,9 +324,13 @@ where
             let upper_bound = (self.z & prefix_mask) | !prefix_mask;
 
             if lower_bound >= self.a && upper_bound < self.b {
+                // The extra +2 is for the "0b" prefix
+                let width = (BITS_OF_PRECISION + 2) as usize;
+
                 debug!("Found minimal prefix ({prefix_size} bits)");
-                debug!("Lower bound {lower_bound:#066b} ({lower_bound})");
-                debug!("Upper bound {upper_bound:#066b} ({upper_bound})");
+                debug!("z:          {:#0width$b} ({})", self.z, self.z);
+                debug!("Lower bound {lower_bound:#0width$b} ({lower_bound})");
+                debug!("Upper bound {upper_bound:#0width$b} ({upper_bound})");
                 return prefix_size;
             }
         }
